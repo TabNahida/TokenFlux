@@ -40,13 +40,12 @@ target("tokenflux_cli")
     set_kind("binary")
     add_files("cli/main.cpp")
     add_deps("tokenflux")
-
-if has_config("python") then
-    target("py_tokenflux")
-        set_kind("shared")
-        set_basename("tokenflux")
-        add_rules("python.library")
-        add_files("python/bindings.cpp")
-        add_deps("tokenflux")
-        add_packages("pybind11")
-end
+    if has_config("python") then
+        target("py_tokenflux")
+            set_kind("shared")
+            set_basename("tokenflux")
+            add_rules("python.library")
+            add_files("python/bindings.cpp")
+            add_deps("tokenflux")
+            add_packages("pybind11")
+    end
