@@ -16,7 +16,6 @@ target("tokenflux")
     add_includedirs("include", {public = true})
     add_headerfiles("include/(tokenflux/*.hpp)")
     add_files("src/*.cpp")
-    remove_files("src/main.cpp")
     add_packages("nlohmann_json")
     if is_plat("linux") then
         add_syslinks("pthread")
