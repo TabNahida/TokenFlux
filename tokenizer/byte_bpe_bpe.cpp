@@ -66,12 +66,30 @@ std::vector<Word> build_words(const std::unordered_map<std::string, uint64_t> &g
 }
 
 void train_bpe(std::vector<Word> &words, std::vector<std::string> &id_to_symbol, std::vector<std::string> &merges_out,
-               std::size_t target_vocab, std::size_t min_pair_freq)
+               std::size_t target_vocab, std::size_t min_pair_freq, std::size_t max_pair_entries)
 {
     std::unordered_map<uint64_t, uint64_t> pair_counts;
-    pair_counts.reserve(words.size() * 2 + 1024);
+    std::size_t reserve_hint = words.size() * 2 + 1024;
+    if (max_pair_entries > 0)
+    {
+        reserve_hint = std::min<std::size_t>(reserve_hint, max_pair_entries);
+    }
+    pair_counts.reserve(reserve_hint);
     std::unordered_map<uint64_t, std::vector<uint32_t>> pair_words;
-    pair_words.reserve(words.size() * 2 + 1024);
+    pair_words.reserve(reserve_hint);
+    std::size_t skipped_pairs_due_to_cap = 0;
+
+    auto can_track_pair = [&](uint64_t key) -> bool {
+        if (max_pair_entries == 0)
+        {
+            return true;
+        }
+        if (pair_counts.find(key) != pair_counts.end())
+        {
+            return true;
+        }
+        return pair_counts.size() < max_pair_entries;
+    };
 
     for (uint32_t idx = 0; idx < words.size(); ++idx)
     {
@@ -85,6 +103,11 @@ void train_bpe(std::vector<Word> &words, std::vector<std::string> &id_to_symbol,
         for (std::size_t i = 0; i + 1 < syms.size(); ++i)
         {
             uint64_t key = pair_key(syms[i], syms[i + 1]);
+            if (!can_track_pair(key))
+            {
+                ++skipped_pairs_due_to_cap;
+                continue;
+            }
             pair_counts[key] += words[idx].freq;
             keys.push_back(key);
         }
@@ -94,6 +117,11 @@ void train_bpe(std::vector<Word> &words, std::vector<std::string> &id_to_symbol,
         {
             pair_words[key].push_back(idx);
         }
+    }
+    if (skipped_pairs_due_to_cap > 0)
+    {
+        std::cerr << "pair cap active: skipped " << skipped_pairs_due_to_cap
+                  << " new pair keys while building initial stats\n";
     }
 
     std::priority_queue<HeapItem, std::vector<HeapItem>, HeapCmp> heap;
@@ -159,54 +187,90 @@ void train_bpe(std::vector<Word> &words, std::vector<std::string> &id_to_symbol,
                         if (prev != -1)
                         {
                             uint64_t k_prev = pair_key(prev, a);
-                            auto &cnt = pair_counts[k_prev];
-                            if (cnt >= w.freq)
+                            auto it_prev = pair_counts.find(k_prev);
+                            if (it_prev != pair_counts.end())
                             {
-                                cnt -= w.freq;
+                                auto &cnt = it_prev->second;
+                                if (cnt >= w.freq)
+                                {
+                                    cnt -= w.freq;
+                                }
+                                else
+                                {
+                                    cnt = 0;
+                                }
+                                heap.push({k_prev, cnt});
                             }
-                            else
-                            {
-                                cnt = 0;
-                            }
-                            heap.push({k_prev, cnt});
                         }
                         if (next != -1)
                         {
                             uint64_t k_next = pair_key(b, next);
-                            auto &cnt = pair_counts[k_next];
-                            if (cnt >= w.freq)
+                            auto it_next = pair_counts.find(k_next);
+                            if (it_next != pair_counts.end())
                             {
-                                cnt -= w.freq;
+                                auto &cnt = it_next->second;
+                                if (cnt >= w.freq)
+                                {
+                                    cnt -= w.freq;
+                                }
+                                else
+                                {
+                                    cnt = 0;
+                                }
+                                heap.push({k_next, cnt});
                             }
-                            else
-                            {
-                                cnt = 0;
-                            }
-                            heap.push({k_next, cnt});
                         }
 
                         if (prev != -1)
                         {
                             uint64_t k_new_prev = pair_key(prev, new_id);
-                            auto &cnt = pair_counts[k_new_prev];
-                            cnt += w.freq;
-                            heap.push({k_new_prev, cnt});
-                            auto &vec = pair_words[k_new_prev];
-                            if (vec.empty() || vec.back() != widx)
+                            auto it_new_prev = pair_counts.find(k_new_prev);
+                            if (it_new_prev != pair_counts.end())
                             {
-                                vec.push_back(widx);
+                                auto &cnt = it_new_prev->second;
+                                cnt += w.freq;
+                                heap.push({k_new_prev, cnt});
+                                auto &vec = pair_words[k_new_prev];
+                                if (vec.empty() || vec.back() != widx)
+                                {
+                                    vec.push_back(widx);
+                                }
+                            }
+                            else if (can_track_pair(k_new_prev))
+                            {
+                                pair_counts.emplace(k_new_prev, w.freq);
+                                heap.push({k_new_prev, w.freq});
+                                pair_words[k_new_prev].push_back(widx);
+                            }
+                            else
+                            {
+                                ++skipped_pairs_due_to_cap;
                             }
                         }
                         if (next != -1)
                         {
                             uint64_t k_new_next = pair_key(new_id, next);
-                            auto &cnt = pair_counts[k_new_next];
-                            cnt += w.freq;
-                            heap.push({k_new_next, cnt});
-                            auto &vec = pair_words[k_new_next];
-                            if (vec.empty() || vec.back() != widx)
+                            auto it_new_next = pair_counts.find(k_new_next);
+                            if (it_new_next != pair_counts.end())
                             {
-                                vec.push_back(widx);
+                                auto &cnt = it_new_next->second;
+                                cnt += w.freq;
+                                heap.push({k_new_next, cnt});
+                                auto &vec = pair_words[k_new_next];
+                                if (vec.empty() || vec.back() != widx)
+                                {
+                                    vec.push_back(widx);
+                                }
+                            }
+                            else if (can_track_pair(k_new_next))
+                            {
+                                pair_counts.emplace(k_new_next, w.freq);
+                                heap.push({k_new_next, w.freq});
+                                pair_words[k_new_next].push_back(widx);
+                            }
+                            else
+                            {
+                                ++skipped_pairs_due_to_cap;
                             }
                         }
 
@@ -231,5 +295,9 @@ void train_bpe(std::vector<Word> &words, std::vector<std::string> &id_to_symbol,
         {
             std::cerr << "Merges: " << merges_done << "/" << max_merges << "\n";
         }
+    }
+    if (skipped_pairs_due_to_cap > 0)
+    {
+        std::cerr << "pair cap total skipped new pair keys: " << skipped_pairs_due_to_cap << "\n";
     }
 }

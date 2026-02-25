@@ -6,17 +6,23 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <iostream>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include <zlib.h>
+#include <lzma.h>
 
 static std::string trim(const std::string &s)
 {
@@ -167,6 +173,10 @@ void apply_env_overrides(Config &cfg, const std::unordered_map<std::string, std:
         cfg.max_chars_per_doc = parse_size(*v, cfg.max_chars_per_doc);
     if (auto v = get("THREADS"))
         cfg.threads = parse_size(*v, cfg.threads);
+    if (auto v = get("MAX_MEMORY_MB"))
+        cfg.max_memory_mb = parse_size(*v, cfg.max_memory_mb);
+    if (auto v = get("PAIR_MAX_ENTRIES"))
+        cfg.pair_max_entries = parse_size(*v, cfg.pair_max_entries);
     if (auto v = get("OUTPUT_JSON"))
         cfg.output_json = *v;
     if (auto v = get("OUTPUT_VOCAB"))
@@ -286,6 +296,101 @@ std::vector<std::string> glob_files(const std::string &pattern)
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+static bool ends_with(const std::string &s, const std::string &suffix)
+{
+    return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::vector<std::string> expand_data_glob(const std::string &pattern)
+{
+    auto files = glob_files(pattern);
+    if (!files.empty())
+    {
+        return files;
+    }
+
+    static const std::array<std::string, 8> suffixes = {
+        ".json.gz", ".jsonl.gz", ".json.xz", ".jsonl.xz", ".json", ".jsonl", ".ndjson", ".parquet"};
+    std::string norm = normalize_path(pattern);
+    std::vector<std::string> candidates;
+    candidates.reserve(suffixes.size() + 2);
+
+    bool replaced = false;
+    for (const auto &suffix : suffixes)
+    {
+        if (ends_with(norm, suffix))
+        {
+            std::string base = pattern.substr(0, pattern.size() - suffix.size());
+            for (const auto &alt : suffixes)
+            {
+                if (alt != suffix)
+                {
+                    candidates.push_back(base + alt);
+                }
+            }
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced)
+    {
+        for (const auto &suffix : suffixes)
+        {
+            candidates.push_back(pattern + suffix);
+        }
+    }
+
+    std::unordered_set<std::string> seen;
+    for (const auto &cand : candidates)
+    {
+        auto partial = glob_files(cand);
+        for (const auto &path : partial)
+        {
+            std::string norm_path = normalize_path(path);
+            if (seen.insert(norm_path).second)
+            {
+                files.push_back(path);
+            }
+        }
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+InputFormat detect_input_format(const std::string &path)
+{
+    std::string norm = normalize_path(path);
+    if (ends_with(norm, ".jsonl.gz") || ends_with(norm, ".ndjson.gz"))
+    {
+        return InputFormat::jsonl_gz;
+    }
+    if (ends_with(norm, ".json.gz"))
+    {
+        return InputFormat::json_gz;
+    }
+    if (ends_with(norm, ".jsonl.xz") || ends_with(norm, ".ndjson.xz"))
+    {
+        return InputFormat::jsonl_xz;
+    }
+    if (ends_with(norm, ".json.xz"))
+    {
+        return InputFormat::json_xz;
+    }
+    if (ends_with(norm, ".jsonl") || ends_with(norm, ".ndjson"))
+    {
+        return InputFormat::jsonl;
+    }
+    if (ends_with(norm, ".json"))
+    {
+        return InputFormat::json;
+    }
+    if (ends_with(norm, ".parquet"))
+    {
+        return InputFormat::parquet;
+    }
+    return InputFormat::unknown;
 }
 
 static void append_utf8(uint32_t cp, std::string &out)
@@ -815,6 +920,514 @@ bool read_text_lines(const std::string &path, const std::function<void(const std
     return true;
 }
 
+static bool decode_xz_stream(std::istream &in, const std::function<void(const char *, std::size_t)> &on_chunk)
+{
+    lzma_stream strm = LZMA_STREAM_INIT;
+    if (lzma_stream_decoder(&strm, UINT64_MAX, 0) != LZMA_OK)
+    {
+        return false;
+    }
+
+    std::vector<std::uint8_t> in_buf(1 << 16);
+    std::vector<std::uint8_t> out_buf(1 << 16);
+    lzma_action action = LZMA_RUN;
+    bool eof = false;
+    bool ok = true;
+
+    while (true)
+    {
+        if (strm.avail_in == 0 && !eof)
+        {
+            in.read(reinterpret_cast<char *>(in_buf.data()), static_cast<std::streamsize>(in_buf.size()));
+            std::streamsize got = in.gcount();
+            if (got < 0)
+            {
+                ok = false;
+                break;
+            }
+            strm.next_in = in_buf.data();
+            strm.avail_in = static_cast<std::size_t>(got);
+            if (got == 0)
+            {
+                eof = true;
+                action = LZMA_FINISH;
+            }
+        }
+
+        strm.next_out = out_buf.data();
+        strm.avail_out = out_buf.size();
+
+        lzma_ret ret = lzma_code(&strm, action);
+        std::size_t produced = out_buf.size() - strm.avail_out;
+        if (produced > 0)
+        {
+            on_chunk(reinterpret_cast<const char *>(out_buf.data()), produced);
+        }
+
+        if (ret == LZMA_STREAM_END)
+        {
+            break;
+        }
+        if (ret != LZMA_OK)
+        {
+            ok = false;
+            break;
+        }
+        if (eof && strm.avail_in == 0 && produced == 0)
+        {
+            ok = false;
+            break;
+        }
+    }
+
+    lzma_end(&strm);
+    return ok;
+}
+
+bool read_xz_lines(const std::string &path, const std::function<void(const std::string &)> &cb)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        return false;
+    }
+
+    std::string pending;
+    bool ok = decode_xz_stream(in, [&](const char *data, std::size_t n) {
+        pending.append(data, n);
+        std::size_t start = 0;
+        while (start < pending.size())
+        {
+            std::size_t pos = pending.find('\n', start);
+            if (pos == std::string::npos)
+            {
+                break;
+            }
+            std::string line = pending.substr(start, pos - start);
+            if (!line.empty() && line.back() == '\r')
+            {
+                line.pop_back();
+            }
+            cb(line);
+            start = pos + 1;
+        }
+        if (start > 0)
+        {
+            pending.erase(0, start);
+        }
+    });
+    if (!ok)
+    {
+        return false;
+    }
+
+    if (!pending.empty())
+    {
+        if (!pending.empty() && pending.back() == '\r')
+        {
+            pending.pop_back();
+        }
+        cb(pending);
+    }
+    return true;
+}
+
+static bool read_text_file_all(const std::string &path, std::string &out)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        return false;
+    }
+    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    return static_cast<bool>(in) || in.eof();
+}
+
+static bool read_gz_file_all(const std::string &path, std::string &out)
+{
+    gzFile f = gzopen(path.c_str(), "rb");
+    if (!f)
+    {
+        return false;
+    }
+    std::vector<char> buf(1 << 16);
+    out.clear();
+    while (true)
+    {
+        int got = gzread(f, buf.data(), static_cast<unsigned int>(buf.size()));
+        if (got < 0)
+        {
+            gzclose(f);
+            return false;
+        }
+        if (got == 0)
+        {
+            break;
+        }
+        out.append(buf.data(), static_cast<std::size_t>(got));
+    }
+    gzclose(f);
+    return true;
+}
+
+static bool read_xz_file_all(const std::string &path, std::string &out)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        return false;
+    }
+    out.clear();
+    return decode_xz_stream(in, [&](const char *data, std::size_t n) { out.append(data, n); });
+}
+
+static bool parse_json_object_for_field(const std::string &s, std::size_t &i, const std::string &field,
+                                        const std::function<void(const std::string &)> &cb)
+{
+    skip_ws(s, i);
+    if (i >= s.size() || s[i] != '{')
+    {
+        return false;
+    }
+    ++i;
+    while (true)
+    {
+        skip_ws(s, i);
+        if (i >= s.size())
+        {
+            return false;
+        }
+        if (s[i] == '}')
+        {
+            ++i;
+            return true;
+        }
+        std::string key;
+        if (!parse_json_string(s, i, key))
+        {
+            return false;
+        }
+        skip_ws(s, i);
+        if (i >= s.size() || s[i] != ':')
+        {
+            return false;
+        }
+        ++i;
+        skip_ws(s, i);
+        if (key == field && i < s.size() && s[i] == '"')
+        {
+            std::string text;
+            if (!parse_json_string(s, i, text))
+            {
+                return false;
+            }
+            if (!text.empty())
+            {
+                cb(text);
+            }
+        }
+        else
+        {
+            if (!skip_json_value(s, i))
+            {
+                return false;
+            }
+        }
+        skip_ws(s, i);
+        if (i < s.size() && s[i] == ',')
+        {
+            ++i;
+            continue;
+        }
+        if (i < s.size() && s[i] == '}')
+        {
+            ++i;
+            return true;
+        }
+        return false;
+    }
+}
+
+static bool parse_json_array_for_field(const std::string &s, std::size_t &i, const std::string &field,
+                                       const std::function<void(const std::string &)> &cb)
+{
+    skip_ws(s, i);
+    if (i >= s.size() || s[i] != '[')
+    {
+        return false;
+    }
+    ++i;
+    while (true)
+    {
+        skip_ws(s, i);
+        if (i >= s.size())
+        {
+            return false;
+        }
+        if (s[i] == ']')
+        {
+            ++i;
+            return true;
+        }
+        if (s[i] == '{')
+        {
+            if (!parse_json_object_for_field(s, i, field, cb))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            if (!skip_json_value(s, i))
+            {
+                return false;
+            }
+        }
+        skip_ws(s, i);
+        if (i < s.size() && s[i] == ',')
+        {
+            ++i;
+            continue;
+        }
+        if (i < s.size() && s[i] == ']')
+        {
+            ++i;
+            return true;
+        }
+        return false;
+    }
+}
+
+static bool for_each_text_record_in_json_document(const std::string &payload, const std::string &text_field,
+                                                  const std::function<void(const std::string &)> &cb)
+{
+    std::size_t i = 0;
+    skip_ws(payload, i);
+    if (i >= payload.size())
+    {
+        return true;
+    }
+    if (payload[i] == '[')
+    {
+        return parse_json_array_for_field(payload, i, text_field, cb);
+    }
+    if (payload[i] == '{')
+    {
+        return parse_json_object_for_field(payload, i, text_field, cb);
+    }
+    return false;
+}
+
+static std::string quote_arg(const std::string &v)
+{
+    std::string out;
+    out.reserve(v.size() + 2);
+    out.push_back('"');
+    for (char c : v)
+    {
+        if (c == '"')
+        {
+            out += "\\\"";
+        }
+        else
+        {
+            out.push_back(c);
+        }
+    }
+    out.push_back('"');
+    return out;
+}
+
+static bool read_parquet_records(const std::string &path, const std::string &text_field,
+                                 const std::function<void(const std::string &)> &cb, std::string &err)
+{
+    std::filesystem::path script = std::filesystem::path("tokenizer") / "parquet_stream.py";
+    if (!std::filesystem::exists(script))
+    {
+        err = "missing parquet helper script: " + script.string();
+        return false;
+    }
+
+    std::string cmd = "python " + quote_arg(script.string()) + " --path " + quote_arg(path) + " --field " +
+                      quote_arg(text_field);
+#ifdef _WIN32
+    FILE *pipe = _popen(cmd.c_str(), "r");
+#else
+    FILE *pipe = popen(cmd.c_str(), "r");
+#endif
+    if (!pipe)
+    {
+        err = "failed to start parquet helper command";
+        return false;
+    }
+
+    std::array<char, 1 << 15> buffer{};
+    std::string pending;
+    auto consume_line = [&](std::string line) {
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+        {
+            line.pop_back();
+        }
+        if (line.empty())
+        {
+            return;
+        }
+        std::string text;
+        if (!extract_json_field(line, text_field, text) || text.empty())
+        {
+            return;
+        }
+        cb(text);
+    };
+    while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe))
+    {
+        pending.append(buffer.data());
+        if (!pending.empty() && pending.back() == '\n')
+        {
+            consume_line(std::move(pending));
+            pending.clear();
+        }
+    }
+    if (!pending.empty())
+    {
+        consume_line(std::move(pending));
+    }
+
+#ifdef _WIN32
+    int rc = _pclose(pipe);
+#else
+    int rc = pclose(pipe);
+#endif
+    if (rc != 0)
+    {
+        err = "parquet helper failed (ensure Python with pyarrow/pandas is available)";
+        return false;
+    }
+    return true;
+}
+
+static bool for_each_text_record_in_lines(const std::function<bool(const std::function<void(const std::string &)> &)> &reader,
+                                          const std::string &text_field, const std::function<void(const std::string &)> &cb,
+                                          std::size_t &matched)
+{
+    matched = 0;
+    return reader([&](const std::string &line) {
+        if (line.empty())
+        {
+            return;
+        }
+        std::string text;
+        if (!extract_json_field(line, text_field, text) || text.empty())
+        {
+            return;
+        }
+        cb(text);
+        ++matched;
+    });
+}
+
+bool for_each_text_record(const std::string &path, const std::string &text_field,
+                          const std::function<void(const std::string &)> &cb, std::string &err)
+{
+    InputFormat fmt = detect_input_format(path);
+    std::size_t matched = 0;
+
+    switch (fmt)
+    {
+    case InputFormat::jsonl:
+        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_text_lines(path, line_cb); }, text_field,
+                                           cb, matched))
+        {
+            err = "failed to read text lines: " + path;
+            return false;
+        }
+        return true;
+    case InputFormat::jsonl_gz:
+        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_gz_lines(path, line_cb); }, text_field,
+                                           cb, matched))
+        {
+            err = "failed to read gz lines: " + path;
+            return false;
+        }
+        return true;
+    case InputFormat::jsonl_xz:
+        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_xz_lines(path, line_cb); }, text_field,
+                                           cb, matched))
+        {
+            err = "failed to read xz lines: " + path;
+            return false;
+        }
+        return true;
+    case InputFormat::json:
+    case InputFormat::json_gz:
+    case InputFormat::json_xz: {
+        bool line_ok = false;
+        if (fmt == InputFormat::json)
+        {
+            line_ok = for_each_text_record_in_lines([&](const auto &line_cb) { return read_text_lines(path, line_cb); },
+                                                    text_field, cb, matched);
+        }
+        else if (fmt == InputFormat::json_gz)
+        {
+            line_ok = for_each_text_record_in_lines([&](const auto &line_cb) { return read_gz_lines(path, line_cb); },
+                                                    text_field, cb, matched);
+        }
+        else
+        {
+            line_ok = for_each_text_record_in_lines([&](const auto &line_cb) { return read_xz_lines(path, line_cb); },
+                                                    text_field, cb, matched);
+        }
+        if (!line_ok)
+        {
+            err = "failed to read json stream: " + path;
+            return false;
+        }
+        if (matched > 0)
+        {
+            return true;
+        }
+
+        std::string payload;
+        bool read_ok = false;
+        if (fmt == InputFormat::json)
+        {
+            read_ok = read_text_file_all(path, payload);
+        }
+        else if (fmt == InputFormat::json_gz)
+        {
+            read_ok = read_gz_file_all(path, payload);
+        }
+        else
+        {
+            read_ok = read_xz_file_all(path, payload);
+        }
+        if (!read_ok)
+        {
+            err = "failed to read full json document: " + path;
+            return false;
+        }
+        if (!for_each_text_record_in_json_document(payload, text_field, cb))
+        {
+            err = "failed to parse json document: " + path;
+            return false;
+        }
+        return true;
+    }
+    case InputFormat::parquet:
+        return read_parquet_records(path, text_field, cb, err);
+    case InputFormat::unknown:
+    default:
+        // Fallback: try line-based json extraction for arbitrary extensions.
+        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_text_lines(path, line_cb); }, text_field,
+                                           cb, matched))
+        {
+            err = "unsupported input format: " + path;
+            return false;
+        }
+        return true;
+    }
+}
+
 static std::string json_escape(const std::string &s)
 {
     std::string out;
@@ -983,26 +1596,44 @@ bool write_chunk_file(const std::string &path, const std::unordered_map<std::str
     {
         return false;
     }
+
+    std::vector<char> payload;
+    payload.reserve(counts.size() * 32 + 16);
+    auto append_bytes = [&](const void *ptr, std::size_t n) {
+        const char *p = reinterpret_cast<const char *>(ptr);
+        payload.insert(payload.end(), p, p + n);
+    };
+    for (const auto &kv : counts)
+    {
+        uint32_t len = static_cast<uint32_t>(kv.first.size());
+        append_bytes(&len, sizeof(len));
+        append_bytes(kv.first.data(), len);
+        uint32_t count = kv.second;
+        append_bytes(&count, sizeof(count));
+    }
+
+    uLongf dst_bound = compressBound(static_cast<uLong>(payload.size()));
+    std::vector<Bytef> compressed(dst_bound);
+    uLongf compressed_size = dst_bound;
+    int zret = compress2(compressed.data(), &compressed_size, reinterpret_cast<const Bytef *>(payload.data()),
+                         static_cast<uLong>(payload.size()), Z_BEST_SPEED);
+    if (zret != Z_OK)
+    {
+        return false;
+    }
+
     ChunkHeader header;
     header.doc_count = doc_count;
     header.entry_count = counts.size();
+    header.payload_uncompressed_bytes = static_cast<uint64_t>(payload.size());
+    header.payload_compressed_bytes = static_cast<uint64_t>(compressed_size);
     out.write(reinterpret_cast<const char *>(&header), sizeof(header));
     if (!out)
     {
         return false;
     }
-    for (const auto &kv : counts)
-    {
-        uint32_t len = static_cast<uint32_t>(kv.first.size());
-        out.write(reinterpret_cast<const char *>(&len), sizeof(len));
-        out.write(kv.first.data(), len);
-        uint32_t count = kv.second;
-        out.write(reinterpret_cast<const char *>(&count), sizeof(count));
-        if (!out)
-        {
-            return false;
-        }
-    }
+
+    out.write(reinterpret_cast<const char *>(compressed.data()), static_cast<std::streamsize>(compressed_size));
     return true;
 }
 
@@ -1013,16 +1644,47 @@ bool read_chunk_header(const std::string &path, ChunkHeader &header)
     {
         return false;
     }
-    in.read(reinterpret_cast<char *>(&header), sizeof(header));
+    struct LegacyHeader
+    {
+        uint32_t magic = 0;
+        uint32_t version = 0;
+        uint64_t doc_count = 0;
+        uint64_t entry_count = 0;
+    };
+    LegacyHeader legacy;
+    in.read(reinterpret_cast<char *>(&legacy), sizeof(legacy));
     if (!in)
     {
         return false;
     }
-    if (header.magic != 0x314B4243 || header.version != 1)
+
+    if (legacy.magic == 0x314B4243 && legacy.version == 1)
     {
-        return false;
+        header.magic = legacy.magic;
+        header.version = legacy.version;
+        header.doc_count = legacy.doc_count;
+        header.entry_count = legacy.entry_count;
+        header.payload_uncompressed_bytes = 0;
+        header.payload_compressed_bytes = 0;
+        return true;
     }
-    return true;
+
+    if (legacy.magic == 0x324B4243 && legacy.version == 2)
+    {
+        header.magic = legacy.magic;
+        header.version = legacy.version;
+        header.doc_count = legacy.doc_count;
+        header.entry_count = legacy.entry_count;
+        in.read(reinterpret_cast<char *>(&header.payload_uncompressed_bytes), sizeof(header.payload_uncompressed_bytes));
+        in.read(reinterpret_cast<char *>(&header.payload_compressed_bytes), sizeof(header.payload_compressed_bytes));
+        if (!in)
+        {
+            return false;
+        }
+        return true;
+    }
+
+    return false;
 }
 
 bool merge_chunk_file(const std::string &path, std::unordered_map<std::string, uint64_t> &global_counts,
@@ -1033,13 +1695,16 @@ bool merge_chunk_file(const std::string &path, std::unordered_map<std::string, u
     {
         return false;
     }
-    ChunkHeader header;
+    struct LegacyHeader
+    {
+        uint32_t magic = 0;
+        uint32_t version = 0;
+        uint64_t doc_count = 0;
+        uint64_t entry_count = 0;
+    };
+    LegacyHeader header;
     in.read(reinterpret_cast<char *>(&header), sizeof(header));
     if (!in)
-    {
-        return false;
-    }
-    if (header.magic != 0x314B4243 || header.version != 1)
     {
         return false;
     }
@@ -1047,32 +1712,109 @@ bool merge_chunk_file(const std::string &path, std::unordered_map<std::string, u
     {
         *doc_count_out += header.doc_count;
     }
-    for (uint64_t i = 0; i < header.entry_count; ++i)
+
+    if (header.magic == 0x314B4243 && header.version == 1)
     {
-        uint32_t len = 0;
-        in.read(reinterpret_cast<char *>(&len), sizeof(len));
-        if (!in)
+        for (uint64_t i = 0; i < header.entry_count; ++i)
         {
-            return false;
-        }
-        std::string key(len, '\0');
-        if (len > 0)
-        {
-            in.read(&key[0], len);
+            uint32_t len = 0;
+            in.read(reinterpret_cast<char *>(&len), sizeof(len));
             if (!in)
             {
                 return false;
             }
+            std::string key(len, '\0');
+            if (len > 0)
+            {
+                in.read(&key[0], len);
+                if (!in)
+                {
+                    return false;
+                }
+            }
+            uint32_t count = 0;
+            in.read(reinterpret_cast<char *>(&count), sizeof(count));
+            if (!in)
+            {
+                return false;
+            }
+            global_counts[key] += count;
         }
-        uint32_t count = 0;
-        in.read(reinterpret_cast<char *>(&count), sizeof(count));
+        return true;
+    }
+
+    if (header.magic != 0x324B4243 || header.version != 2)
+    {
+        return false;
+    }
+
+    uint64_t raw_bytes = 0;
+    uint64_t compressed_bytes = 0;
+    in.read(reinterpret_cast<char *>(&raw_bytes), sizeof(raw_bytes));
+    in.read(reinterpret_cast<char *>(&compressed_bytes), sizeof(compressed_bytes));
+    if (!in)
+    {
+        return false;
+    }
+    if (compressed_bytes == 0 && raw_bytes > 0)
+    {
+        return false;
+    }
+
+    std::vector<Bytef> compressed(static_cast<std::size_t>(compressed_bytes));
+    if (compressed_bytes > 0)
+    {
+        in.read(reinterpret_cast<char *>(compressed.data()), static_cast<std::streamsize>(compressed_bytes));
         if (!in)
+        {
+            return false;
+        }
+    }
+
+    std::vector<char> payload(static_cast<std::size_t>(raw_bytes));
+    if (raw_bytes > 0)
+    {
+        uLongf out_size = static_cast<uLongf>(raw_bytes);
+        int zret = uncompress(reinterpret_cast<Bytef *>(payload.data()), &out_size, compressed.data(),
+                              static_cast<uLong>(compressed.size()));
+        if (zret != Z_OK || out_size != raw_bytes)
+        {
+            return false;
+        }
+    }
+
+    std::size_t pos = 0;
+    auto read_u32 = [&](uint32_t &x) -> bool {
+        if (pos + sizeof(uint32_t) > payload.size())
+        {
+            return false;
+        }
+        std::memcpy(&x, payload.data() + pos, sizeof(uint32_t));
+        pos += sizeof(uint32_t);
+        return true;
+    };
+
+    for (uint64_t i = 0; i < header.entry_count; ++i)
+    {
+        uint32_t len = 0;
+        if (!read_u32(len))
+        {
+            return false;
+        }
+        if (pos + len > payload.size())
+        {
+            return false;
+        }
+        std::string key(payload.data() + pos, payload.data() + pos + len);
+        pos += len;
+        uint32_t count = 0;
+        if (!read_u32(count))
         {
             return false;
         }
         global_counts[key] += count;
     }
-    return true;
+    return pos == payload.size();
 }
 
 static std::string format_duration(double seconds)

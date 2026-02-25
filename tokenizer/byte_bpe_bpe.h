@@ -16,4 +16,4 @@ std::vector<Word> build_words(const std::unordered_map<std::string, uint64_t> &g
                               const std::unordered_map<uint32_t, int> &cp_to_id, std::size_t min_freq);
 
 void train_bpe(std::vector<Word> &words, std::vector<std::string> &id_to_symbol, std::vector<std::string> &merges_out,
-               std::size_t target_vocab, std::size_t min_pair_freq);
+               std::size_t target_vocab, std::size_t min_pair_freq, std::size_t max_pair_entries = 0);

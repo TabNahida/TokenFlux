@@ -4,7 +4,7 @@ set_version("0.1.0")
 add_rules("mode.debug", "mode.release")
 set_languages("c++23")
 
-add_requires("zlib")
+add_requires("zlib", "xz")
 
 target("byte_bpe_train")
     set_kind("binary")
@@ -14,7 +14,7 @@ target("byte_bpe_train")
         "tokenizer/byte_bpe_lib.cpp"
     )
     set_rundir("$(projectdir)")
-    add_packages("zlib")
+    add_packages("zlib", "xz")
 
 target("prepare_shards")
     set_kind("binary")
@@ -23,4 +23,4 @@ target("prepare_shards")
         "tokenizer/byte_bpe_lib.cpp"
     )
     set_rundir("$(projectdir)")
-    add_packages("zlib")
+    add_packages("zlib", "xz")

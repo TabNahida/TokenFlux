@@ -1,2 +1,5 @@
 /.vscode
+/.xmake
 **/__pycache__
+/build
+compile_commands.json

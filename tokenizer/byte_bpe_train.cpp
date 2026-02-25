@@ -28,11 +28,13 @@ static void print_usage()
               << "  --chunk-files <n>           Files per chunk (default: 1)\n"
               << "  --chunk-docs <n>            Reduce map every N docs within a chunk (default: 20000)\n"
               << "  --top-k <n>                 Keep top-k words per chunk (default: 200000)\n"
-              << "  --chunk-dir <path>          Chunk output directory (default: chunks)\n"
+              << "  --chunk-dir <path>          Chunk output directory (default: artifacts/bpe/chunks)\n"
               << "  --resume / --no-resume      Resume from existing chunk files (default: on)\n"
               << "  --progress-interval <ms>    Progress update interval (default: 1000)\n"
               << "  --max-chars <n>             Truncate docs to N chars (default: 20000)\n"
               << "  --threads <n>               Worker threads (0=auto)\n"
+              << "  --max-memory-mb <n>         Soft memory cap for counting/pairs (default: 0=unlimited)\n"
+              << "  --pair-max-entries <n>      Max tracked pair keys (default: auto from --max-memory-mb)\n"
               << "  --output <path>             tokenizer.json output (default: tokenizer.json)\n"
               << "  --vocab <path>              vocab.json output (default: vocab.json)\n"
               << "  --merges <path>             merges.txt output (default: merges.txt)\n"
@@ -112,6 +114,14 @@ static bool parse_args(int argc, char **argv, Config &cfg)
         {
             cfg.threads = static_cast<std::size_t>(std::stoull(argv[++i]));
         }
+        else if (arg == "--max-memory-mb" && i + 1 < argc)
+        {
+            cfg.max_memory_mb = static_cast<std::size_t>(std::stoull(argv[++i]));
+        }
+        else if (arg == "--pair-max-entries" && i + 1 < argc)
+        {
+            cfg.pair_max_entries = static_cast<std::size_t>(std::stoull(argv[++i]));
+        }
         else if (arg == "--output" && i + 1 < argc)
         {
             cfg.output_json = argv[++i];
@@ -174,14 +184,40 @@ static bool parse_args(int argc, char **argv, Config &cfg)
 static std::string chunk_path(const Config &cfg, std::size_t chunk_id)
 {
     std::ostringstream oss;
-    oss << cfg.chunk_dir << "/chunk_" << std::setw(8) << std::setfill('0') << chunk_id << ".bin";
+    oss << cfg.chunk_dir << "/chunk_" << std::setw(8) << std::setfill('0') << chunk_id << ".cbk";
     return oss.str();
+}
+
+static std::unordered_map<std::string, uint64_t> reduce_top_k_u64(std::unordered_map<std::string, uint64_t> &counts,
+                                                                   std::size_t top_k)
+{
+    if (top_k == 0 || counts.size() <= top_k)
+    {
+        return std::move(counts);
+    }
+    std::vector<std::pair<std::string, uint64_t>> vec;
+    vec.reserve(counts.size());
+    for (auto &kv : counts)
+    {
+        vec.emplace_back(std::move(kv.first), kv.second);
+    }
+    counts.clear();
+    auto nth = vec.begin() + static_cast<std::ptrdiff_t>(top_k);
+    std::nth_element(vec.begin(), nth, vec.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+    vec.resize(top_k);
+    std::unordered_map<std::string, uint64_t> reduced;
+    reduced.reserve(vec.size() * 13 / 10 + 8);
+    for (auto &kv : vec)
+    {
+        reduced.emplace(std::move(kv.first), kv.second);
+    }
+    return reduced;
 }
 
 static void process_text(const std::string &text, const Config &cfg,
                          const std::array<std::string, 256> &byte_to_unicode,
                          std::unordered_map<std::string, uint32_t> &local_counts, uint64_t &doc_count,
-                         std::size_t &reduce_counter)
+                         std::size_t &reduce_counter, std::size_t local_entry_cap)
 {
     std::string trimmed = text;
     if (cfg.max_chars_per_doc > 0)
@@ -206,40 +242,38 @@ static void process_text(const std::string &text, const Config &cfg,
     ++reduce_counter;
     if (cfg.chunk_docs > 0 && reduce_counter >= cfg.chunk_docs)
     {
-        local_counts = reduce_top_k(local_counts, cfg.top_k);
+        std::size_t keep = cfg.top_k;
+        if (local_entry_cap > 0 && (keep == 0 || keep > local_entry_cap))
+        {
+            keep = local_entry_cap;
+        }
+        if (keep > 0)
+        {
+            local_counts = reduce_top_k(local_counts, keep);
+        }
         reduce_counter = 0;
+    }
+    if (local_entry_cap > 0 && local_counts.size() > local_entry_cap)
+    {
+        local_counts = reduce_top_k(local_counts, local_entry_cap);
     }
 }
 
 static void process_file(const std::string &path, const Config &cfg,
                          const std::array<std::string, 256> &byte_to_unicode,
                          std::unordered_map<std::string, uint32_t> &local_counts, uint64_t &doc_count,
-                         std::size_t &reduce_counter)
+                         std::size_t &reduce_counter, std::size_t local_entry_cap, std::string &err)
 {
-    auto handle_line = [&](const std::string &line) {
-        if (line.empty())
-        {
-            return;
-        }
-        std::string text;
-        if (!extract_json_field(line, cfg.text_field, text))
-        {
-            return;
-        }
+    bool ok = for_each_text_record(path, cfg.text_field, [&](const std::string &text) {
         if (text.empty())
         {
             return;
         }
-        process_text(text, cfg, byte_to_unicode, local_counts, doc_count, reduce_counter);
-    };
-
-    if (path.size() >= 3 && path.substr(path.size() - 3) == ".gz")
+        process_text(text, cfg, byte_to_unicode, local_counts, doc_count, reduce_counter, local_entry_cap);
+    }, err);
+    if (!ok && err.empty())
     {
-        read_gz_lines(path, handle_line);
-    }
-    else
-    {
-        read_text_lines(path, handle_line);
+        err = "failed to read input file: " + path;
     }
 }
 
@@ -262,20 +296,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    auto files = glob_files(cfg.data_glob);
-    if (files.empty())
-    {
-        if (cfg.data_glob.size() >= 5 && cfg.data_glob.substr(cfg.data_glob.size() - 5) == ".json")
-        {
-            std::string alt = cfg.data_glob + ".gz";
-            files = glob_files(alt);
-            if (files.empty())
-            {
-                std::string alt2 = cfg.data_glob.substr(0, cfg.data_glob.size() - 5) + ".json.gz";
-                files = glob_files(alt2);
-            }
-        }
-    }
+    auto files = expand_data_glob(cfg.data_glob);
     if (files.empty())
     {
         std::cerr << "No files matched: " << cfg.data_glob << "\n";
@@ -290,6 +311,32 @@ int main(int argc, char **argv)
     if (cfg.threads == 0)
     {
         cfg.threads = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    }
+
+    std::size_t local_entry_cap = cfg.top_k;
+    std::size_t global_entry_cap = 0;
+    if (cfg.max_memory_mb > 0)
+    {
+        std::uint64_t total_budget_bytes = static_cast<std::uint64_t>(cfg.max_memory_mb) * 1024ull * 1024ull;
+        std::uint64_t per_thread_budget = total_budget_bytes / std::max<std::size_t>(1, cfg.threads);
+        std::size_t derived_local_cap = static_cast<std::size_t>(per_thread_budget / 160ull);
+        if (derived_local_cap > 0)
+        {
+            if (local_entry_cap == 0 || local_entry_cap > derived_local_cap)
+            {
+                local_entry_cap = derived_local_cap;
+            }
+        }
+        std::size_t derived_global_cap = static_cast<std::size_t>((total_budget_bytes * 3ull / 4ull) / 128ull);
+        if (derived_global_cap > 0)
+        {
+            global_entry_cap = derived_global_cap;
+        }
+        if (cfg.pair_max_entries == 0)
+        {
+            cfg.pair_max_entries = static_cast<std::size_t>((total_budget_bytes / 2ull) / 40ull);
+            cfg.pair_max_entries = std::max<std::size_t>(cfg.pair_max_entries, 100'000);
+        }
     }
 
     if (std::find(cfg.special_tokens.begin(), cfg.special_tokens.end(), cfg.unk_token) == cfg.special_tokens.end())
@@ -310,6 +357,19 @@ int main(int argc, char **argv)
     std::cerr << "Files: " << files.size() << "\n";
     std::cerr << "Chunks: " << total_chunks << " (" << cfg.chunk_files << " files/chunk)\n";
     std::cerr << "Threads: " << cfg.threads << "\n";
+    std::cerr << "Chunk dir: " << cfg.chunk_dir << "\n";
+    if (local_entry_cap > 0)
+    {
+        std::cerr << "Local count cap/chunk: " << local_entry_cap << "\n";
+    }
+    if (global_entry_cap > 0)
+    {
+        std::cerr << "Global count cap: " << global_entry_cap << "\n";
+    }
+    if (cfg.pair_max_entries > 0)
+    {
+        std::cerr << "Pair cap entries: " << cfg.pair_max_entries << "\n";
+    }
 
     auto byte_to_unicode_cp = build_byte_to_unicode_cp();
     auto byte_to_unicode = build_byte_to_unicode_str(byte_to_unicode_cp);
@@ -323,6 +383,10 @@ int main(int argc, char **argv)
     auto worker = [&]() {
         while (true)
         {
+            if (had_error.load())
+            {
+                break;
+            }
             std::size_t chunk_id = next_chunk.fetch_add(1);
             if (chunk_id >= total_chunks)
             {
@@ -345,17 +409,45 @@ int main(int argc, char **argv)
             }
 
             std::unordered_map<std::string, uint32_t> local_counts;
-            local_counts.reserve(cfg.top_k * 2 + 16);
+            std::size_t reserve_hint = cfg.top_k;
+            if (local_entry_cap > 0 && (reserve_hint == 0 || reserve_hint > local_entry_cap))
+            {
+                reserve_hint = local_entry_cap;
+            }
+            if (reserve_hint == 0)
+            {
+                reserve_hint = 1024;
+            }
+            local_counts.reserve(reserve_hint * 2 + 16);
             uint64_t docs = 0;
             std::size_t reduce_counter = 0;
 
             for (std::size_t i = start; i < end; ++i)
             {
-                process_file(files[i], cfg, byte_to_unicode, local_counts, docs, reduce_counter);
+                std::string local_err;
+                process_file(files[i], cfg, byte_to_unicode, local_counts, docs, reduce_counter, local_entry_cap,
+                             local_err);
+                if (!local_err.empty())
+                {
+                    std::lock_guard<std::mutex> lock(err_mu);
+                    had_error.store(true);
+                    err_msg = local_err;
+                    break;
+                }
             }
-            if (cfg.top_k > 0)
+            if (had_error.load())
             {
-                local_counts = reduce_top_k(local_counts, cfg.top_k);
+                progress.add(1, docs);
+                continue;
+            }
+            std::size_t keep = cfg.top_k;
+            if (local_entry_cap > 0 && (keep == 0 || keep > local_entry_cap))
+            {
+                keep = local_entry_cap;
+            }
+            if (keep > 0)
+            {
+                local_counts = reduce_top_k(local_counts, keep);
             }
             if (!write_chunk_file(out_path, local_counts, docs))
             {
@@ -399,6 +491,10 @@ int main(int argc, char **argv)
         {
             std::cerr << "Failed to read chunk: " << path << "\n";
             return 1;
+        }
+        if (global_entry_cap > 0 && global_counts.size() > global_entry_cap)
+        {
+            global_counts = reduce_top_k_u64(global_counts, global_entry_cap);
         }
         merge_progress.add(1, 0);
     }
@@ -444,7 +540,7 @@ int main(int argc, char **argv)
     std::vector<std::string> merges_out;
     merges_out.reserve(target_vocab - id_to_symbol.size() + 16);
 
-    train_bpe(words, id_to_symbol, merges_out, target_vocab, cfg.min_pair_freq);
+    train_bpe(words, id_to_symbol, merges_out, target_vocab, cfg.min_pair_freq, cfg.pair_max_entries);
 
     std::vector<std::string> id_to_token;
     id_to_token.reserve(cfg.special_tokens.size() + id_to_symbol.size());

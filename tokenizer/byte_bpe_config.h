@@ -24,8 +24,10 @@ struct Config
     std::size_t max_chars_per_doc = 20000;
     std::size_t threads = 0; // 0 -> auto
     std::size_t progress_interval_ms = 1000;
+    std::size_t max_memory_mb = 0; // 0 -> unlimited
+    std::size_t pair_max_entries = 0; // 0 -> unlimited (or derived from max_memory_mb)
 
-    std::string chunk_dir = "chunks";
+    std::string chunk_dir = "artifacts/bpe/chunks";
     bool resume = true;
     bool write_vocab = true;
     bool write_merges = true;

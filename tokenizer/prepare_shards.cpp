@@ -38,6 +38,7 @@ struct Args
     std::uint64_t progress_every = 10'000; // CLI compatibility
     std::size_t threads = 0;
     std::size_t cache_max_entries = 50'000;
+    std::size_t max_memory_mb = 0; // 0 = unlimited
     bool resume = true;
 };
 
@@ -118,7 +119,7 @@ static std::string normalize_path_for_compare(const std::string &path)
 
 static void print_usage()
 {
-    std::cerr << "Tokenize json/json.gz to train_*.bin shards (C++, multi-thread, resumable)\n"
+    std::cerr << "Tokenize json/jsonl/json.gz/jsonl.gz/json.xz/jsonl.xz/parquet to train shards (C++, multi-thread, resumable)\n"
               << "Usage:\n"
               << "  prepare_shards [options]\n\n"
               << "Options:\n"
@@ -136,6 +137,7 @@ static void print_usage()
               << "  --bos-token <tok>            BOS token (default: none)\n"
               << "  --threads <n>                Worker threads (0=auto)\n"
               << "  --cache-max-entries <n>      Max cached token pieces per file (default: 50000, 0=disable)\n"
+              << "  --max-memory-mb <n>          Soft memory cap for per-file processing (default: 0=unlimited)\n"
               << "  --resume / --no-resume       Reuse completed part files (default: on)\n"
               << "  --progress-every <n>         CLI compatibility only (unused)\n"
               << "  --help                       Show this help\n";
@@ -338,6 +340,19 @@ static bool parse_args(int argc, char **argv, Args &args)
             }
             args.cache_max_entries = x;
         }
+        else if (arg == "--max-memory-mb")
+        {
+            const char *v = need_value(arg);
+            if (!v)
+                return false;
+            std::size_t x = 0;
+            if (!parse_size_arg(v, x))
+            {
+                std::cerr << "Invalid --max-memory-mb: " << v << "\n";
+                return false;
+            }
+            args.max_memory_mb = x;
+        }
         else if (arg == "--resume")
         {
             args.resume = true;
@@ -371,26 +386,7 @@ static bool parse_args(int argc, char **argv, Args &args)
 
 static std::vector<std::string> expand_data_files(const std::string &data_glob)
 {
-    auto files = glob_files(data_glob);
-    if (!files.empty())
-    {
-        return files;
-    }
-    if (ends_with(data_glob, ".json"))
-    {
-        std::string alt = data_glob.substr(0, data_glob.size() - 5) + ".json.gz";
-        files = glob_files(alt);
-        if (!files.empty())
-        {
-            return files;
-        }
-    }
-    if (!ends_with(data_glob, ".gz"))
-    {
-        std::string alt = data_glob + ".gz";
-        files = glob_files(alt);
-    }
-    return files;
+    return expand_data_glob(data_glob);
 }
 
 static void append_utf8(std::uint32_t cp, std::string &out)
@@ -1728,13 +1724,32 @@ static bool process_file_to_part(const FileTask &task, const Args &args, const B
         return false;
     }
 
-    std::vector<std::uint32_t> write_buffer;
-    write_buffer.reserve(1 << 20);
-    const std::size_t flush_threshold_tokens = 1 << 20;
-    std::unordered_map<std::string, std::vector<std::uint32_t>> cache;
-    if (args.cache_max_entries > 0)
+    std::size_t flush_threshold_tokens = 1 << 20;
+    std::size_t effective_cache_max_entries = args.cache_max_entries;
+    if (args.max_memory_mb > 0)
     {
-        const std::size_t reserve_n = std::min<std::size_t>(args.cache_max_entries, 1 << 16);
+        std::uint64_t budget_bytes = static_cast<std::uint64_t>(args.max_memory_mb) * 1024ull * 1024ull;
+        std::uint64_t buffer_budget = std::max<std::uint64_t>(budget_bytes / 4ull, 1ull << 20);
+        std::size_t per_token_bytes = sizeof(std::uint32_t);
+        std::size_t derived_flush = static_cast<std::size_t>(buffer_budget / std::max<std::size_t>(per_token_bytes, 1));
+        flush_threshold_tokens = std::max<std::size_t>(64 * 1024, derived_flush);
+        if (effective_cache_max_entries > 0)
+        {
+            std::size_t derived_cache_cap = static_cast<std::size_t>((budget_bytes * 3ull / 4ull) / 128ull);
+            if (derived_cache_cap == 0)
+            {
+                derived_cache_cap = 1;
+            }
+            effective_cache_max_entries = std::min<std::size_t>(effective_cache_max_entries, derived_cache_cap);
+        }
+    }
+
+    std::vector<std::uint32_t> write_buffer;
+    write_buffer.reserve(std::min<std::size_t>(flush_threshold_tokens, 1 << 20));
+    std::unordered_map<std::string, std::vector<std::uint32_t>> cache;
+    if (effective_cache_max_entries > 0)
+    {
+        const std::size_t reserve_n = std::min<std::size_t>(effective_cache_max_entries, 1 << 16);
         cache.reserve(reserve_n);
     }
 
@@ -1752,18 +1767,17 @@ static bool process_file_to_part(const FileTask &task, const Args &args, const B
         return true;
     };
 
-    bool read_ok = true;
     bool callback_ok = true;
-    auto on_line = [&](const std::string &line) {
-        if (!callback_ok || line.empty())
+    bool read_ok = for_each_text_record(task.path, args.text_field, [&](const std::string &incoming_text) {
+        if (!callback_ok)
         {
             return;
         }
-        std::string text;
-        if (!extract_json_field(line, args.text_field, text) || text.empty())
+        if (incoming_text.empty())
         {
             return;
         }
+        std::string text = incoming_text;
         std::size_t chars = utf8_char_count(text);
         if (chars < args.min_chars)
         {
@@ -1785,7 +1799,7 @@ static bool process_file_to_part(const FileTask &task, const Args &args, const B
         {
             write_buffer.push_back(static_cast<std::uint32_t>(sig.eos_id));
         }
-        if (args.cache_max_entries == 0 || cache.size() > args.cache_max_entries)
+        if (effective_cache_max_entries == 0 || cache.size() > effective_cache_max_entries)
         {
             cache.clear();
             cache.rehash(0);
@@ -1799,19 +1813,13 @@ static bool process_file_to_part(const FileTask &task, const Args &args, const B
                 callback_ok = false;
             }
         }
-    };
-
-    if (ends_with(task.path, ".gz"))
-    {
-        read_ok = read_gz_lines(task.path, on_line);
-    }
-    else
-    {
-        read_ok = read_text_lines(task.path, on_line);
-    }
+    }, err);
     if (!read_ok)
     {
-        err = "failed to read input file: " + task.path;
+        if (err.empty())
+        {
+            err = "failed to read input file: " + task.path;
+        }
         return false;
     }
     if (!callback_ok)
@@ -2061,6 +2069,7 @@ static bool write_meta_json(const std::filesystem::path &meta_path, const Args &
         out << "  \"bos_id\": null,\n";
     }
     out << "  \"max_tokens_per_shard\": " << args.max_tokens_per_shard << ",\n";
+    out << "  \"max_memory_mb\": " << args.max_memory_mb << ",\n";
     out << "  \"num_docs\": " << num_docs << ",\n";
     out << "  \"num_skipped\": " << num_skipped << ",\n";
     out << "  \"total_tokens\": " << total_tokens << ",\n";
@@ -2075,7 +2084,8 @@ static bool write_meta_json(const std::filesystem::path &meta_path, const Args &
         out << "\n";
     }
     out << "  ],\n";
-    out << "  \"num_reused_files\": " << reused_files << "\n";
+    out << "  \"num_reused_files\": " << reused_files << ",\n";
+    out << "  \"layout\": {\"shards\": \"shards\", \"parts\": \"cache/parts\"}\n";
     out << "}\n";
     if (!out)
     {
@@ -2161,13 +2171,21 @@ int main(int argc, char **argv)
     std::uint32_t dtype_bytes = tokenizer.vocab_size() <= std::numeric_limits<std::uint16_t>::max() ? 2u : 4u;
     std::string dtype_name = dtype_bytes == 2 ? "uint16" : "uint32";
 
-    std::filesystem::path out_dir = args.out_dir;
-    std::filesystem::path parts_dir = out_dir / ".parts";
+    std::filesystem::path out_root = args.out_dir;
+    std::filesystem::path shard_dir = out_root / "shards";
+    std::filesystem::path parts_dir = out_root / "cache" / "parts";
     std::error_code ec;
     std::filesystem::create_directories(parts_dir, ec);
     if (ec)
     {
-        std::cerr << "failed to create output dir: " << out_dir.string() << "\n";
+        std::cerr << "failed to create parts dir under: " << out_root.string() << "\n";
+        return 1;
+    }
+    ec.clear();
+    std::filesystem::create_directories(shard_dir, ec);
+    if (ec)
+    {
+        std::cerr << "failed to create shard dir under: " << out_root.string() << "\n";
         return 1;
     }
 
@@ -2219,8 +2237,14 @@ int main(int argc, char **argv)
     std::cerr << "Files: " << files.size() << "\n";
     std::cerr << "Threads: " << worker_threads << "\n";
     std::cerr << "Cache max entries/file: " << args.cache_max_entries << "\n";
+    if (args.max_memory_mb > 0)
+    {
+        std::cerr << "Memory cap/file: " << args.max_memory_mb << " MiB\n";
+    }
     std::cerr << "Tokenizer vocab: " << tokenizer.vocab_size() << " (dtype=" << dtype_name << ")\n";
-    std::cerr << "Output dir: " << out_dir.string() << "\n";
+    std::cerr << "Output root: " << out_root.string() << "\n";
+    std::cerr << "Shard dir: " << shard_dir.string() << "\n";
+    std::cerr << "Parts dir: " << parts_dir.string() << "\n";
 
     auto start_time = std::chrono::steady_clock::now();
     std::vector<PartResult> results(tasks.size());
@@ -2289,7 +2313,7 @@ int main(int argc, char **argv)
     std::vector<ShardInfo> shards;
     std::uint64_t total_tokens = 0;
     err.clear();
-    if (!build_train_shards(out_dir, tasks, dtype_bytes, args.max_tokens_per_shard, shards, total_tokens, err))
+    if (!build_train_shards(shard_dir, tasks, dtype_bytes, args.max_tokens_per_shard, shards, total_tokens, err))
     {
         std::cerr << err << "\n";
         return 1;
@@ -2301,7 +2325,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    std::filesystem::path meta_path = out_dir / "meta.json";
+    std::filesystem::path meta_path = out_root / "meta.json";
     if (!write_meta_json(meta_path, args, data_glob, files, tokenizer.vocab_size(), dtype_name, eos_id, bos_id, num_docs,
                          num_skipped, total_tokens, shards, reused_files, err))
     {
@@ -2316,7 +2340,7 @@ int main(int argc, char **argv)
         elapsed = 1e-9;
     }
     std::cerr << "done. docs=" << num_docs << " skipped=" << num_skipped << " total_tokens=" << total_tokens << "\n";
-    std::cerr << "shards=" << shards.size() << " dtype=" << dtype_name << " out=" << out_dir.string() << "\n";
+    std::cerr << "shards=" << shards.size() << " dtype=" << dtype_name << " out=" << shard_dir.string() << "\n";
     std::cerr << "reused_files=" << reused_files << "/" << files.size() << "\n";
     std::cerr << "throughput docs/s=" << static_cast<double>(num_docs) / elapsed
               << " tok/s=" << static_cast<double>(total_tokens) / elapsed << "\n";
