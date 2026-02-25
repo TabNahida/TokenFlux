@@ -1,5 +1,11 @@
 /.vscode
 /.xmake
-**/__pycache__
 /build
+/.cache
+/artifacts
+**/__pycache__
+.env
 compile_commands.json
+merges.txt
+tokenizer.json
+vocab.json
