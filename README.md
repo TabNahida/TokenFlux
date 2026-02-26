@@ -2,7 +2,7 @@
 
 TokenFlux is a high-performance C++ toolkit for tokenizer training and dataset pre-tokenization.
 
-Latest release: **0.2.0**. See [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Latest release: **0.2.1**. See [RELEASE](https://github.com/TabNahida/TokenFlux/releases).
 
 ## Binaries
 
