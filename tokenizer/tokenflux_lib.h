@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "byte_bpe_config.h"
+#include "tokenflux_config.h"
 
 std::unordered_map<std::string, std::string> read_env_file(const std::string &path);
 void apply_env_overrides(Config &cfg, const std::unordered_map<std::string, std::string> &env);
@@ -77,6 +77,8 @@ class ProgressTracker
 {
   public:
     ProgressTracker(uint64_t total_chunks, const std::string &label, uint64_t interval_ms);
+    void add_total(uint64_t chunks);
+    void set_total(uint64_t chunks);
     void add(uint64_t chunks, uint64_t docs);
     void finish();
 
@@ -84,7 +86,7 @@ class ProgressTracker
     void maybe_print(bool force);
 
     std::string label_;
-    uint64_t total_ = 0;
+    std::atomic<uint64_t> total_{0};
     uint64_t interval_ms_ = 1000;
     std::atomic<uint64_t> done_chunks_{0};
     std::atomic<uint64_t> done_docs_{0};
@@ -92,3 +94,4 @@ class ProgressTracker
     std::chrono::steady_clock::time_point last_print_;
     std::mutex print_mu_;
 };
+

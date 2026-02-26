@@ -1,4 +1,4 @@
-#include "byte_bpe_lib.h"
+#include "tokenflux_lib.h"
 
 #include <algorithm>
 #include <array>
@@ -76,6 +76,18 @@ static std::size_t parse_size(const std::string &s, std::size_t def_val)
     }
 }
 
+static double parse_double(const std::string &s, double def_val)
+{
+    try
+    {
+        return std::stod(s);
+    }
+    catch (...)
+    {
+        return def_val;
+    }
+}
+
 static bool parse_bool(const std::string &s, bool def_val)
 {
     std::string v;
@@ -91,6 +103,33 @@ static bool parse_bool(const std::string &s, bool def_val)
     if (v == "0" || v == "false" || v == "no" || v == "n" || v == "off")
     {
         return false;
+    }
+    return def_val;
+}
+
+static TrainerKind parse_trainer_kind(const std::string &s, TrainerKind def_val)
+{
+    std::string v;
+    v.reserve(s.size());
+    for (char c : s)
+    {
+        v.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    if (v == "byte_bpe" || v == "byte-bpe" || v == "byte")
+    {
+        return TrainerKind::byte_bpe;
+    }
+    if (v == "bpe")
+    {
+        return TrainerKind::bpe;
+    }
+    if (v == "wordpiece" || v == "word_piece" || v == "wp")
+    {
+        return TrainerKind::wordpiece;
+    }
+    if (v == "unigram" || v == "unigram_lm" || v == "unigramlm")
+    {
+        return TrainerKind::unigram;
     }
     return def_val;
 }
@@ -164,14 +203,24 @@ void apply_env_overrides(Config &cfg, const std::unordered_map<std::string, std:
         cfg.min_freq = parse_size(*v, cfg.min_freq);
     if (auto v = get("MIN_PAIR_FREQ"))
         cfg.min_pair_freq = parse_size(*v, cfg.min_pair_freq);
+    if (auto v = get("TRAINER"))
+        cfg.trainer = parse_trainer_kind(*v, cfg.trainer);
+    if (auto v = get("TRAINER_KIND"))
+        cfg.trainer = parse_trainer_kind(*v, cfg.trainer);
     if (auto v = get("CHUNK_FILES"))
         cfg.chunk_files = parse_size(*v, cfg.chunk_files);
     if (auto v = get("CHUNK_DOCS"))
         cfg.chunk_docs = parse_size(*v, cfg.chunk_docs);
+    if (auto v = get("RECORDS_PER_CHUNK"))
+        cfg.records_per_chunk = parse_size(*v, cfg.records_per_chunk);
+    if (auto v = get("QUEUE_CAPACITY"))
+        cfg.queue_capacity = parse_size(*v, cfg.queue_capacity);
     if (auto v = get("TOP_K"))
         cfg.top_k = parse_size(*v, cfg.top_k);
     if (auto v = get("MAX_CHARS_PER_DOC"))
         cfg.max_chars_per_doc = parse_size(*v, cfg.max_chars_per_doc);
+    if (auto v = get("MAX_TOKEN_LENGTH"))
+        cfg.max_token_length = parse_size(*v, cfg.max_token_length);
     if (auto v = get("THREADS"))
         cfg.threads = parse_size(*v, cfg.threads);
     if (auto v = get("MAX_MEMORY_MB"))
@@ -194,6 +243,14 @@ void apply_env_overrides(Config &cfg, const std::unordered_map<std::string, std:
         cfg.progress_interval_ms = parse_size(*v, cfg.progress_interval_ms);
     if (auto v = get("PROGRESS_INTERVAL_MS"))
         cfg.progress_interval_ms = parse_size(*v, cfg.progress_interval_ms);
+    if (auto v = get("WORDPIECE_CONTINUING_PREFIX"))
+        cfg.wordpiece_continuing_prefix = *v;
+    if (auto v = get("UNIGRAM_EM_ITERS"))
+        cfg.unigram_em_iters = parse_size(*v, cfg.unigram_em_iters);
+    if (auto v = get("UNIGRAM_SEED_MULTIPLIER"))
+        cfg.unigram_seed_multiplier = parse_size(*v, cfg.unigram_seed_multiplier);
+    if (auto v = get("UNIGRAM_PRUNE_RATIO"))
+        cfg.unigram_prune_ratio = parse_double(*v, cfg.unigram_prune_ratio);
     if (auto v = get("SPECIAL_TOKENS"))
     {
         auto tokens = split_csv(*v);
@@ -1751,6 +1808,18 @@ ProgressTracker::ProgressTracker(uint64_t total_chunks, const std::string &label
     last_print_ = start_;
 }
 
+void ProgressTracker::add_total(uint64_t chunks)
+{
+    total_.fetch_add(chunks, std::memory_order_relaxed);
+    maybe_print(false);
+}
+
+void ProgressTracker::set_total(uint64_t chunks)
+{
+    total_.store(chunks, std::memory_order_relaxed);
+    maybe_print(false);
+}
+
 void ProgressTracker::add(uint64_t chunks, uint64_t docs)
 {
     done_chunks_.fetch_add(chunks, std::memory_order_relaxed);
@@ -1785,18 +1854,32 @@ void ProgressTracker::maybe_print(bool force)
         }
     }
     last_print_ = now;
+    uint64_t total_chunks = total_.load(std::memory_order_relaxed);
     uint64_t done_chunks = done_chunks_.load(std::memory_order_relaxed);
     uint64_t done_docs = done_docs_.load(std::memory_order_relaxed);
     double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(now - start_).count();
-    double pct = total_ ? (100.0 * static_cast<double>(done_chunks) / static_cast<double>(total_)) : 100.0;
     double chunk_rate = elapsed > 0.0 ? static_cast<double>(done_chunks) / elapsed : 0.0;
     double doc_rate = elapsed > 0.0 ? static_cast<double>(done_docs) / elapsed : 0.0;
+    double pct = 0.0;
+    if (total_chunks > 0)
+    {
+        pct = 100.0 * static_cast<double>(done_chunks) / static_cast<double>(total_chunks);
+    }
     double eta =
-        (chunk_rate > 0.0 && total_ > done_chunks) ? static_cast<double>(total_ - done_chunks) / chunk_rate : 0.0;
+        (chunk_rate > 0.0 && total_chunks > done_chunks) ? static_cast<double>(total_chunks - done_chunks) / chunk_rate
+                                                          : 0.0;
 
     std::ostringstream oss;
     oss.setf(std::ios::fixed);
-    oss << "[" << label_ << "] chunks " << done_chunks << "/" << total_ << " (" << std::setprecision(1) << pct << "%)";
+    if (total_chunks > 0)
+    {
+        oss << "[" << label_ << "] chunks " << done_chunks << "/" << total_chunks << " (" << std::setprecision(1)
+            << pct << "%)";
+    }
+    else
+    {
+        oss << "[" << label_ << "] chunks " << done_chunks;
+    }
     if (done_docs > 0)
     {
         oss << " docs " << done_docs << " (" << std::setprecision(1) << (static_cast<double>(done_docs) / 1e6) << "M)";
@@ -4098,3 +4181,4 @@ static bool emit_text_values(int32_t encoding, const uint8_t *value_data, std::s
 }
 } // namespace pq
 } // namespace
+

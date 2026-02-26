@@ -1,0 +1,44 @@
+#include "train_backend.h"
+
+#include <unordered_map>
+#include <vector>
+
+#include "tokenflux_bpe.h"
+#include "tokenflux_lib.h"
+#include "train_backend_common.h"
+
+bool train_backend_byte_bpe(const Config &cfg, const GlobalCountMap &global_counts, TrainArtifacts &artifacts,
+                            std::string &err)
+{
+    (void)err;
+    auto specials = make_special_tokens(cfg);
+    auto byte_to_unicode_cp = build_byte_to_unicode_cp();
+    auto byte_to_unicode = build_byte_to_unicode_str(byte_to_unicode_cp);
+
+    std::unordered_map<uint32_t, int> cp_to_id;
+    cp_to_id.reserve(256);
+    std::vector<std::string> id_to_symbol;
+    id_to_symbol.reserve(256 + cfg.vocab_size);
+    for (std::size_t i = 0; i < 256; ++i)
+    {
+        const auto &sym = byte_to_unicode[i];
+        id_to_symbol.push_back(sym);
+        std::size_t j = 0;
+        uint32_t cp = 0;
+        next_codepoint(sym, j, cp);
+        cp_to_id[cp] = static_cast<int>(i);
+    }
+
+    auto words = build_words(global_counts, cp_to_id, cfg.min_freq);
+    std::size_t target_vocab = calc_pair_target_vocab(cfg, id_to_symbol.size(), specials.size());
+    std::vector<std::string> merges;
+    merges.reserve(target_vocab > id_to_symbol.size() ? (target_vocab - id_to_symbol.size()) : 0);
+
+    train_bpe(words, id_to_symbol, merges, target_vocab, cfg.min_pair_freq, cfg.pair_max_entries);
+    append_symbols_to_vocab(specials, id_to_symbol, artifacts.id_to_token);
+    artifacts.merges = std::move(merges);
+    artifacts.has_merges = true;
+    artifacts.token_scores.assign(artifacts.id_to_token.size(), -1.0);
+    return true;
+}
+

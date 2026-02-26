@@ -1,26 +1,35 @@
 set_project("TokenFlux")
-set_version("0.1.0")
+set_version("0.2.0")
 
 add_rules("mode.debug", "mode.release")
 set_languages("c++23")
 
 add_requires("zlib", "xz")
 
-target("byte_bpe_train")
+target("TokenFluxTrain")
     set_kind("binary")
     add_files(
-        "tokenizer/byte_bpe_train.cpp",
-        "tokenizer/byte_bpe_bpe.cpp",
-        "tokenizer/byte_bpe_lib.cpp"
+        "tokenizer/TokenFluxTrain.cpp",
+        "tokenizer/tokenflux_bpe.cpp",
+        "tokenizer/tokenflux_lib.cpp",
+        "tokenizer/train_frontend.cpp",
+        "tokenizer/train_io.cpp",
+        "tokenizer/trainers.cpp",
+        "tokenizer/train_backend_common.cpp",
+        "tokenizer/train_backend_byte_bpe.cpp",
+        "tokenizer/train_backend_bpe.cpp",
+        "tokenizer/train_backend_wordpiece.cpp",
+        "tokenizer/train_backend_unigram.cpp"
     )
     set_rundir("$(projectdir)")
     add_packages("zlib", "xz")
 
-target("prepare_shards")
+target("TokenFluxTokenize")
     set_kind("binary")
     add_files(
-        "tokenizer/prepare_shards.cpp",
-        "tokenizer/byte_bpe_lib.cpp"
+        "tokenizer/TokenFluxTokenize.cpp",
+        "tokenizer/tokenflux_lib.cpp"
     )
     set_rundir("$(projectdir)")
     add_packages("zlib", "xz")
+

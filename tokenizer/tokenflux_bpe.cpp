@@ -1,4 +1,4 @@
-#include "byte_bpe_bpe.h"
+#include "tokenflux_bpe.h"
 
 #include <algorithm>
 #include <iostream>
@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "byte_bpe_lib.h"
+#include "tokenflux_lib.h"
 
 static uint64_t pair_key(int a, int b)
 {
@@ -301,3 +301,4 @@ void train_bpe(std::vector<Word> &words, std::vector<std::string> &id_to_symbol,
         std::cerr << "pair cap total skipped new pair keys: " << skipped_pairs_due_to_cap << "\n";
     }
 }
+

@@ -3,7 +3,7 @@ from tokenizers import Tokenizer
 from tokenizers.decoders import ByteLevel
 
 tok = Tokenizer.from_file("tokenizer.json")
-text = "你好 world! 123"
+text = "hello world! 123"
 
 enc = tok.encode(text)
 tok.decoder = ByteLevel()

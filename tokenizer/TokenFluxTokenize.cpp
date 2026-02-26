@@ -1,4 +1,4 @@
-#include "byte_bpe_lib.h"
+#include "tokenflux_lib.h"
 
 #include <algorithm>
 #include <array>
@@ -42,12 +42,35 @@ struct Args
     bool resume = true;
 };
 
+enum class ModelType
+{
+    bpe = 0,
+    wordpiece,
+    unigram
+};
+
+enum class PretokenizerType
+{
+    byte_level = 0,
+    whitespace
+};
+
+struct UnigramEntry
+{
+    std::string token;
+    double score = 0.0;
+};
+
 struct TokenizerData
 {
     std::unordered_map<std::string, std::uint32_t> vocab;
     std::vector<std::pair<std::string, std::string>> merges;
     std::unordered_map<std::string, std::uint32_t> added_tokens;
     std::string unk_token;
+    std::string continuing_subword_prefix = "##";
+    ModelType model_type = ModelType::bpe;
+    PretokenizerType pretokenizer_type = PretokenizerType::byte_level;
+    std::vector<UnigramEntry> unigram_vocab;
 };
 
 struct MergeRule
@@ -119,9 +142,10 @@ static std::string normalize_path_for_compare(const std::string &path)
 
 static void print_usage()
 {
-    std::cerr << "Tokenize json/jsonl/json.gz/jsonl.gz/json.xz/jsonl.xz/parquet to train shards (C++, multi-thread, resumable)\n"
+    std::cerr << "TokenFluxTokenize: tokenize json/jsonl/json.gz/jsonl.gz/json.xz/jsonl.xz/parquet to train shards\n"
+              << "Supports tokenizer.json model types: BPE / WordPiece / Unigram\n"
               << "Usage:\n"
-              << "  prepare_shards [options]\n\n"
+              << "  TokenFluxTokenize [options]\n\n"
               << "Options:\n"
               << "  --env-file <path>            Path to .env (default: .env)\n"
               << "  --data-glob <glob>           Override DATA_PATH from .env\n"
@@ -413,6 +437,76 @@ static void append_utf8(std::uint32_t cp, std::string &out)
         out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
         out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
     }
+}
+
+static bool is_unicode_space(std::uint32_t cp)
+{
+    if (cp <= 0x20)
+    {
+        return cp == 0x09 || cp == 0x0A || cp == 0x0B || cp == 0x0C || cp == 0x0D || cp == 0x20;
+    }
+    return cp == 0x85 || cp == 0xA0 || cp == 0x1680 || cp == 0x180E || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 ||
+           cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
+}
+
+static std::vector<std::string> split_whitespace_words(const std::string &text)
+{
+    std::vector<std::string> out;
+    std::string cur;
+    std::size_t i = 0;
+    while (i < text.size())
+    {
+        std::uint32_t cp = 0;
+        std::size_t prev = i;
+        if (!next_codepoint(text, i, cp))
+        {
+            break;
+        }
+        if (i <= prev)
+        {
+            break;
+        }
+        std::string cp_utf8;
+        append_utf8(cp, cp_utf8);
+        if (is_unicode_space(cp))
+        {
+            if (!cur.empty())
+            {
+                out.push_back(std::move(cur));
+                cur.clear();
+            }
+            continue;
+        }
+        cur += cp_utf8;
+    }
+    if (!cur.empty())
+    {
+        out.push_back(std::move(cur));
+    }
+    return out;
+}
+
+static std::vector<std::string> split_codepoints_utf8(const std::string &text)
+{
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    while (i < text.size())
+    {
+        std::uint32_t cp = 0;
+        std::size_t prev = i;
+        if (!next_codepoint(text, i, cp))
+        {
+            break;
+        }
+        if (i <= prev)
+        {
+            break;
+        }
+        std::string cp_utf8;
+        append_utf8(cp, cp_utf8);
+        out.push_back(std::move(cp_utf8));
+    }
+    return out;
 }
 
 static void skip_ws(const std::string &s, std::size_t &i)
@@ -737,6 +831,61 @@ static bool parse_json_uint(const std::string &s, std::size_t &i, std::uint32_t 
     return true;
 }
 
+static bool parse_json_double(const std::string &s, std::size_t &i, double &out)
+{
+    skip_ws(s, i);
+    if (i >= s.size())
+    {
+        return false;
+    }
+    std::size_t start = i;
+    if (s[i] == '+' || s[i] == '-')
+    {
+        ++i;
+    }
+    bool has_digit = false;
+    while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i])))
+    {
+        has_digit = true;
+        ++i;
+    }
+    if (i < s.size() && s[i] == '.')
+    {
+        ++i;
+        while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i])))
+        {
+            has_digit = true;
+            ++i;
+        }
+    }
+    if (i < s.size() && (s[i] == 'e' || s[i] == 'E'))
+    {
+        ++i;
+        if (i < s.size() && (s[i] == '+' || s[i] == '-'))
+        {
+            ++i;
+        }
+        while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i])))
+        {
+            has_digit = true;
+            ++i;
+        }
+    }
+    if (!has_digit)
+    {
+        return false;
+    }
+    try
+    {
+        out = std::stod(s.substr(start, i - start));
+    }
+    catch (...)
+    {
+        return false;
+    }
+    return true;
+}
+
 static bool parse_vocab_object(const std::string &s, std::size_t &i, TokenizerData &out)
 {
     skip_ws(s, i);
@@ -886,6 +1035,191 @@ static bool parse_merges_array(const std::string &s, std::size_t &i, TokenizerDa
             continue;
         }
         if (i < s.size() && s[i] == ']')
+        {
+            ++i;
+            return true;
+        }
+        return false;
+    }
+}
+
+static void set_model_type_from_string(const std::string &type, TokenizerData &out)
+{
+    if (type == "BPE")
+    {
+        out.model_type = ModelType::bpe;
+        return;
+    }
+    if (type == "WordPiece")
+    {
+        out.model_type = ModelType::wordpiece;
+        return;
+    }
+    if (type == "Unigram")
+    {
+        out.model_type = ModelType::unigram;
+    }
+}
+
+static void set_pretokenizer_type_from_string(const std::string &type, TokenizerData &out)
+{
+    if (type == "ByteLevel")
+    {
+        out.pretokenizer_type = PretokenizerType::byte_level;
+        return;
+    }
+    if (type == "WhitespaceSplit" || type == "Whitespace")
+    {
+        out.pretokenizer_type = PretokenizerType::whitespace;
+    }
+}
+
+static bool parse_unigram_vocab_array(const std::string &s, std::size_t &i, TokenizerData &out)
+{
+    skip_ws(s, i);
+    if (i >= s.size() || s[i] != '[')
+    {
+        return false;
+    }
+    ++i;
+    std::size_t index = 0;
+    while (true)
+    {
+        skip_ws(s, i);
+        if (i >= s.size())
+        {
+            return false;
+        }
+        if (s[i] == ']')
+        {
+            ++i;
+            return true;
+        }
+        if (s[i] == '[')
+        {
+            ++i;
+            skip_ws(s, i);
+            std::string token;
+            double score = 0.0;
+            bool ok = parse_json_string(s, i, token);
+            skip_ws(s, i);
+            if (ok && i < s.size() && s[i] == ',')
+            {
+                ++i;
+                skip_ws(s, i);
+                ok = parse_json_double(s, i, score);
+            }
+            while (i < s.size())
+            {
+                skip_ws(s, i);
+                if (i < s.size() && s[i] == ']')
+                {
+                    ++i;
+                    break;
+                }
+                if (i < s.size() && s[i] == ',')
+                {
+                    ++i;
+                    if (!skip_json_value(s, i))
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+                return false;
+            }
+            if (ok && !token.empty())
+            {
+                out.unigram_vocab.push_back({token, score});
+                out.vocab[token] = static_cast<std::uint32_t>(index);
+                ++index;
+            }
+        }
+        else
+        {
+            if (!skip_json_value(s, i))
+            {
+                return false;
+            }
+        }
+        skip_ws(s, i);
+        if (i < s.size() && s[i] == ',')
+        {
+            ++i;
+            continue;
+        }
+        if (i < s.size() && s[i] == ']')
+        {
+            ++i;
+            return true;
+        }
+        return false;
+    }
+}
+
+static bool parse_pre_tokenizer_object(const std::string &s, std::size_t &i, TokenizerData &out)
+{
+    skip_ws(s, i);
+    if (i >= s.size())
+    {
+        return false;
+    }
+    if (s.compare(i, 4, "null") == 0)
+    {
+        i += 4;
+        return true;
+    }
+    if (s[i] != '{')
+    {
+        return skip_json_value(s, i);
+    }
+    ++i;
+    while (true)
+    {
+        skip_ws(s, i);
+        if (i >= s.size())
+        {
+            return false;
+        }
+        if (s[i] == '}')
+        {
+            ++i;
+            return true;
+        }
+        std::string key;
+        if (!parse_json_string(s, i, key))
+        {
+            return false;
+        }
+        skip_ws(s, i);
+        if (i >= s.size() || s[i] != ':')
+        {
+            return false;
+        }
+        ++i;
+        if (key == "type")
+        {
+            std::string type;
+            if (!parse_json_string(s, i, type))
+            {
+                return false;
+            }
+            set_pretokenizer_type_from_string(type, out);
+        }
+        else
+        {
+            if (!skip_json_value(s, i))
+            {
+                return false;
+            }
+        }
+        skip_ws(s, i);
+        if (i < s.size() && s[i] == ',')
+        {
+            ++i;
+            continue;
+        }
+        if (i < s.size() && s[i] == '}')
         {
             ++i;
             return true;
@@ -1044,7 +1378,22 @@ static bool parse_model_object(const std::string &s, std::size_t &i, TokenizerDa
         ++i;
         if (key == "vocab")
         {
-            if (!parse_vocab_object(s, i, out))
+            skip_ws(s, i);
+            if (i < s.size() && s[i] == '{')
+            {
+                if (!parse_vocab_object(s, i, out))
+                {
+                    return false;
+                }
+            }
+            else if (i < s.size() && s[i] == '[')
+            {
+                if (!parse_unigram_vocab_array(s, i, out))
+                {
+                    return false;
+                }
+            }
+            else
             {
                 return false;
             }
@@ -1064,6 +1413,24 @@ static bool parse_model_object(const std::string &s, std::size_t &i, TokenizerDa
                 return false;
             }
             out.unk_token = std::move(unk);
+        }
+        else if (key == "type")
+        {
+            std::string type;
+            if (!parse_json_string(s, i, type))
+            {
+                return false;
+            }
+            set_model_type_from_string(type, out);
+        }
+        else if (key == "continuing_subword_prefix")
+        {
+            std::string prefix;
+            if (!parse_json_string(s, i, prefix))
+            {
+                return false;
+            }
+            out.continuing_subword_prefix = std::move(prefix);
         }
         else
         {
@@ -1133,6 +1500,13 @@ static bool parse_tokenizer_json(const std::string &content, TokenizerData &out)
                 return false;
             }
         }
+        else if (key == "pre_tokenizer")
+        {
+            if (!parse_pre_tokenizer_object(content, i, out))
+            {
+                return false;
+            }
+        }
         else
         {
             if (!skip_json_value(content, i))
@@ -1172,7 +1546,7 @@ static std::string read_file_all(const std::string &path)
     return ss.str();
 }
 
-class BPETokenizer
+class TokenizerEncoder
 {
   public:
     bool load(const std::string &path, std::string &err)
@@ -1191,6 +1565,13 @@ class BPETokenizer
             return false;
         }
         vocab_ = std::move(data.vocab);
+        model_type_ = data.model_type;
+        pretokenizer_type_ = data.pretokenizer_type;
+        continuing_subword_prefix_ = data.continuing_subword_prefix;
+        if (continuing_subword_prefix_.empty())
+        {
+            continuing_subword_prefix_ = "##";
+        }
         unk_token_ = data.unk_token;
         has_unk_ = false;
         if (!unk_token_.empty())
@@ -1203,41 +1584,110 @@ class BPETokenizer
             }
         }
 
+        auto cp_map = build_byte_to_unicode_cp();
+        byte_to_unicode_ = build_byte_to_unicode_str(cp_map);
+
         symbols_.clear();
         symbol_to_id_.clear();
         merge_rules_.clear();
-        symbols_.reserve(vocab_.size() + data.merges.size() + 256);
-        symbol_to_id_.reserve(vocab_.size() + data.merges.size() + 256);
-        merge_rules_.reserve(data.merges.size() * 13 / 10 + 8);
+        unigram_tokens_.clear();
+        unigram_index_.clear();
 
-        auto cp_map = build_byte_to_unicode_cp();
-        byte_to_unicode_ = build_byte_to_unicode_str(cp_map);
-        for (const auto &s : byte_to_unicode_)
+        if (model_type_ == ModelType::bpe)
         {
-            ensure_symbol(s);
-        }
-        for (const auto &kv : vocab_)
-        {
-            ensure_symbol(kv.first);
-        }
-        for (std::size_t rank = 0; rank < data.merges.size(); ++rank)
-        {
-            const auto &m = data.merges[rank];
-            std::uint32_t left = ensure_symbol(m.first);
-            std::uint32_t right = ensure_symbol(m.second);
-            std::uint32_t merged = ensure_symbol(m.first + m.second);
-            std::uint64_t key = pair_key(left, right);
-            if (merge_rules_.find(key) == merge_rules_.end())
+            symbols_.reserve(vocab_.size() + data.merges.size() + 256);
+            symbol_to_id_.reserve(vocab_.size() + data.merges.size() + 256);
+            merge_rules_.reserve(data.merges.size() * 13 / 10 + 8);
+
+            if (pretokenizer_type_ == PretokenizerType::byte_level)
             {
-                merge_rules_[key] = MergeRule{static_cast<std::uint32_t>(rank), merged};
+                for (const auto &s : byte_to_unicode_)
+                {
+                    ensure_symbol(s);
+                }
+            }
+            for (const auto &kv : vocab_)
+            {
+                ensure_symbol(kv.first);
+            }
+            for (std::size_t rank = 0; rank < data.merges.size(); ++rank)
+            {
+                const auto &m = data.merges[rank];
+                std::uint32_t left = ensure_symbol(m.first);
+                std::uint32_t right = ensure_symbol(m.second);
+                std::uint32_t merged = ensure_symbol(m.first + m.second);
+                std::uint64_t key = pair_key(left, right);
+                if (merge_rules_.find(key) == merge_rules_.end())
+                {
+                    merge_rules_[key] = MergeRule{static_cast<std::uint32_t>(rank), merged};
+                }
             }
         }
+        else if (model_type_ == ModelType::unigram)
+        {
+            std::vector<UnigramEntry> entries = data.unigram_vocab;
+            if (entries.empty())
+            {
+                std::vector<std::pair<std::string, std::uint32_t>> ordered;
+                ordered.reserve(vocab_.size());
+                for (const auto &kv : vocab_)
+                {
+                    ordered.push_back(kv);
+                }
+                std::sort(ordered.begin(), ordered.end(),
+                          [](const auto &a, const auto &b) { return a.second < b.second; });
+                for (const auto &kv : ordered)
+                {
+                    entries.push_back({kv.first, -1.0});
+                }
+            }
+            unigram_tokens_.reserve(entries.size());
+            for (const auto &entry : entries)
+            {
+                auto it = vocab_.find(entry.token);
+                if (it == vocab_.end())
+                {
+                    continue;
+                }
+                auto cps = split_codepoints_utf8(entry.token);
+                if (cps.empty())
+                {
+                    continue;
+                }
+                unigram_tokens_.push_back({entry.token, std::move(cps), entry.score, it->second});
+            }
+            for (std::size_t i = 0; i < unigram_tokens_.size(); ++i)
+            {
+                unigram_index_[unigram_tokens_[i].cps.front()].push_back(i);
+            }
+            for (auto &kv : unigram_index_)
+            {
+                auto &vec = kv.second;
+                std::sort(vec.begin(), vec.end(), [&](std::size_t a, std::size_t b) {
+                    return unigram_tokens_[a].cps.size() > unigram_tokens_[b].cps.size();
+                });
+            }
+        }
+
         return true;
     }
 
     std::size_t vocab_size() const
     {
         return vocab_.size();
+    }
+
+    std::string model_name() const
+    {
+        if (model_type_ == ModelType::bpe)
+        {
+            return "BPE";
+        }
+        if (model_type_ == ModelType::wordpiece)
+        {
+            return "WordPiece";
+        }
+        return "Unigram";
     }
 
     bool token_to_id(const std::string &token, std::uint32_t &id) const
@@ -1255,20 +1705,56 @@ class BPETokenizer
                             std::unordered_map<std::string, std::vector<std::uint32_t>> &cache,
                             std::vector<std::uint32_t> &out_ids) const
     {
-        auto pieces = pretokenize(text);
+        std::vector<std::string> pieces;
+        if (pretokenizer_type_ == PretokenizerType::byte_level)
+        {
+            pieces = pretokenize(text);
+        }
+        else
+        {
+            pieces = split_whitespace_words(text);
+        }
         for (const auto &piece : pieces)
         {
             if (piece.empty())
             {
                 continue;
             }
-            std::string encoded = byte_level_encode(piece, byte_to_unicode_);
-            const auto &ids = encode_piece(encoded, cache);
-            out_ids.insert(out_ids.end(), ids.begin(), ids.end());
+            const std::vector<std::uint32_t> *ids = nullptr;
+            if (model_type_ == ModelType::bpe)
+            {
+                std::string encoded = piece;
+                if (pretokenizer_type_ == PretokenizerType::byte_level)
+                {
+                    encoded = byte_level_encode(piece, byte_to_unicode_);
+                }
+                ids = &encode_piece_bpe(encoded, cache);
+            }
+            else if (model_type_ == ModelType::wordpiece)
+            {
+                ids = &encode_piece_wordpiece(piece, cache);
+            }
+            else
+            {
+                ids = &encode_piece_unigram(piece, cache);
+            }
+            if (!ids)
+            {
+                continue;
+            }
+            out_ids.insert(out_ids.end(), ids->begin(), ids->end());
         }
     }
 
   private:
+    struct UnigramTokenState
+    {
+        std::string token;
+        std::vector<std::string> cps;
+        double score = 0.0;
+        std::uint32_t id = 0;
+    };
+
     std::uint32_t ensure_symbol(const std::string &sym)
     {
         auto it = symbol_to_id_.find(sym);
@@ -1288,9 +1774,10 @@ class BPETokenizer
     }
 
     const std::vector<std::uint32_t> &
-    encode_piece(const std::string &encoded, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
+    encode_piece_bpe(const std::string &encoded, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
     {
-        auto it_cache = cache.find(encoded);
+        std::string cache_key = std::string("bpe:") + encoded;
+        auto it_cache = cache.find(cache_key);
         if (it_cache != cache.end())
         {
             return it_cache->second;
@@ -1387,17 +1874,178 @@ class BPETokenizer
             }
         }
 
-        auto inserted = cache.emplace(encoded, std::move(ids));
+        auto inserted = cache.emplace(std::move(cache_key), std::move(ids));
+        return inserted.first->second;
+    }
+
+    const std::vector<std::uint32_t> &
+    encode_piece_wordpiece(const std::string &piece, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
+    {
+        std::string cache_key = std::string("wp:") + piece;
+        auto it_cache = cache.find(cache_key);
+        if (it_cache != cache.end())
+        {
+            return it_cache->second;
+        }
+
+        std::vector<std::uint32_t> ids;
+        auto cps = split_codepoints_utf8(piece);
+        if (!cps.empty())
+        {
+            std::size_t start = 0;
+            bool fallback_to_unk = false;
+            while (start < cps.size())
+            {
+                bool found = false;
+                std::size_t best_end = start;
+                std::uint32_t best_id = 0;
+                for (std::size_t end = cps.size(); end > start; --end)
+                {
+                    std::string cand;
+                    for (std::size_t k = start; k < end; ++k)
+                    {
+                        cand += cps[k];
+                    }
+                    if (start > 0 && !continuing_subword_prefix_.empty())
+                    {
+                        cand = continuing_subword_prefix_ + cand;
+                    }
+                    auto it = vocab_.find(cand);
+                    if (it != vocab_.end())
+                    {
+                        best_id = it->second;
+                        best_end = end;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                {
+                    fallback_to_unk = true;
+                    break;
+                }
+                ids.push_back(best_id);
+                start = best_end;
+            }
+            if (fallback_to_unk && has_unk_)
+            {
+                ids.clear();
+                ids.push_back(unk_id_);
+            }
+        }
+
+        auto inserted = cache.emplace(std::move(cache_key), std::move(ids));
+        return inserted.first->second;
+    }
+
+    static bool unigram_match(const std::vector<std::string> &token_cps, const std::vector<std::string> &word_cps, std::size_t pos)
+    {
+        if (pos + token_cps.size() > word_cps.size())
+        {
+            return false;
+        }
+        for (std::size_t i = 0; i < token_cps.size(); ++i)
+        {
+            if (token_cps[i] != word_cps[pos + i])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    const std::vector<std::uint32_t> &
+    encode_piece_unigram(const std::string &piece, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
+    {
+        std::string cache_key = std::string("uni:") + piece;
+        auto it_cache = cache.find(cache_key);
+        if (it_cache != cache.end())
+        {
+            return it_cache->second;
+        }
+
+        std::vector<std::uint32_t> ids;
+        auto cps = split_codepoints_utf8(piece);
+        if (!cps.empty() && !unigram_tokens_.empty())
+        {
+            const double neg_inf = -1e100;
+            std::size_t n = cps.size();
+            std::vector<double> best(n + 1, neg_inf);
+            std::vector<int> prev_pos(n + 1, -1);
+            std::vector<int> prev_tok(n + 1, -1);
+            best[0] = 0.0;
+
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                if (best[i] <= neg_inf / 2.0)
+                {
+                    continue;
+                }
+                auto it = unigram_index_.find(cps[i]);
+                if (it == unigram_index_.end())
+                {
+                    continue;
+                }
+                for (std::size_t tok_idx : it->second)
+                {
+                    const auto &tok = unigram_tokens_[tok_idx];
+                    if (!unigram_match(tok.cps, cps, i))
+                    {
+                        continue;
+                    }
+                    std::size_t j = i + tok.cps.size();
+                    double cand = best[i] + tok.score;
+                    if (cand > best[j])
+                    {
+                        best[j] = cand;
+                        prev_pos[j] = static_cast<int>(i);
+                        prev_tok[j] = static_cast<int>(tok_idx);
+                    }
+                }
+            }
+
+            if (best[n] <= neg_inf / 2.0)
+            {
+                if (has_unk_)
+                {
+                    ids.push_back(unk_id_);
+                }
+            }
+            else
+            {
+                std::vector<std::uint32_t> rev;
+                int cur = static_cast<int>(n);
+                while (cur > 0)
+                {
+                    int t = prev_tok[static_cast<std::size_t>(cur)];
+                    int p = prev_pos[static_cast<std::size_t>(cur)];
+                    if (t < 0 || p < 0)
+                    {
+                        break;
+                    }
+                    rev.push_back(unigram_tokens_[static_cast<std::size_t>(t)].id);
+                    cur = p;
+                }
+                ids.assign(rev.rbegin(), rev.rend());
+            }
+        }
+
+        auto inserted = cache.emplace(std::move(cache_key), std::move(ids));
         return inserted.first->second;
     }
 
     std::unordered_map<std::string, std::uint32_t> vocab_;
+    ModelType model_type_ = ModelType::bpe;
+    PretokenizerType pretokenizer_type_ = PretokenizerType::byte_level;
+    std::string continuing_subword_prefix_ = "##";
     std::string unk_token_;
     bool has_unk_ = false;
     std::uint32_t unk_id_ = 0;
     std::vector<std::string> symbols_;
     std::unordered_map<std::string, std::uint32_t> symbol_to_id_;
     std::unordered_map<std::uint64_t, MergeRule> merge_rules_;
+    std::vector<UnigramTokenState> unigram_tokens_;
+    std::unordered_map<std::string, std::vector<std::size_t>> unigram_index_;
     std::array<std::string, 256> byte_to_unicode_{};
 };
 
@@ -1701,7 +2349,7 @@ static std::size_t utf8_char_count(const std::string &s)
     return n;
 }
 
-static bool process_file_to_part(const FileTask &task, const Args &args, const BPETokenizer &tokenizer,
+static bool process_file_to_part(const FileTask &task, const Args &args, const TokenizerEncoder &tokenizer,
                                  const PartSignature &sig, PartResult &result, std::string &err)
 {
     if (args.resume && part_is_reusable(task, sig, result))
@@ -2136,7 +2784,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    BPETokenizer tokenizer;
+    TokenizerEncoder tokenizer;
     std::string err;
     if (!tokenizer.load(args.tokenizer_path, err))
     {
@@ -2241,6 +2889,7 @@ int main(int argc, char **argv)
     {
         std::cerr << "Memory cap/file: " << args.max_memory_mb << " MiB\n";
     }
+    std::cerr << "Tokenizer model: " << tokenizer.model_name() << "\n";
     std::cerr << "Tokenizer vocab: " << tokenizer.vocab_size() << " (dtype=" << dtype_name << ")\n";
     std::cerr << "Output root: " << out_root.string() << "\n";
     std::cerr << "Shard dir: " << shard_dir.string() << "\n";
@@ -2346,3 +2995,4 @@ int main(int argc, char **argv)
               << " tok/s=" << static_cast<double>(total_tokens) / elapsed << "\n";
     return 0;
 }
+
