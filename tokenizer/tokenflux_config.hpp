@@ -42,6 +42,7 @@ struct Config
     std::size_t unigram_seed_multiplier = 4;
     double unigram_prune_ratio = 0.75;
     std::string wordpiece_continuing_prefix = "##";
+    bool prescan_records = true; // pre-count total records for stable ETA/progress
 
     std::string chunk_dir = "artifacts/bpe/chunks";
     bool resume = true;

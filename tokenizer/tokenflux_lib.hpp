@@ -79,6 +79,7 @@ class ProgressTracker
     ProgressTracker(uint64_t total_chunks, const std::string &label, uint64_t interval_ms);
     void add_total(uint64_t chunks);
     void set_total(uint64_t chunks);
+    void set_total_docs(uint64_t docs);
     void add(uint64_t chunks, uint64_t docs);
     void finish();
 
@@ -87,10 +88,14 @@ class ProgressTracker
 
     std::string label_;
     std::atomic<uint64_t> total_{0};
+    std::atomic<uint64_t> total_docs_{0};
     uint64_t interval_ms_ = 1000;
     std::atomic<uint64_t> done_chunks_{0};
     std::atomic<uint64_t> done_docs_{0};
     std::chrono::steady_clock::time_point start_;
     std::chrono::steady_clock::time_point last_print_;
+    std::chrono::steady_clock::time_point last_rate_ts_;
+    uint64_t last_rate_chunks_ = 0;
+    uint64_t last_rate_docs_ = 0;
     std::mutex print_mu_;
 };

@@ -176,6 +176,7 @@ void print_train_usage()
               << "  --max-chars <n>             Truncate docs to N chars (default: 20000)\n"
               << "  --threads <n>               Worker threads (0=auto)\n"
               << "  --queue-capacity <n>        Task queue capacity (0=auto)\n"
+              << "  --prescan / --no-prescan    Pre-scan total records for stable ETA (default: on)\n"
               << "  --max-memory-mb <n>         Soft memory cap for counting/pairs (default: 0=unlimited)\n"
               << "  --pair-max-entries <n>      Max tracked pair keys (default: auto from --max-memory-mb)\n"
               << "  --max-token-length <n>      Max token length for unigram seed (default: 16)\n"
@@ -386,6 +387,16 @@ bool parse_train_args(int argc, char **argv, Config &cfg, std::string &err, bool
                 err = "invalid --queue-capacity";
                 return false;
             }
+            continue;
+        }
+        if (arg == "--prescan")
+        {
+            cfg.prescan_records = true;
+            continue;
+        }
+        if (arg == "--no-prescan")
+        {
+            cfg.prescan_records = false;
             continue;
         }
         if (arg == "--max-memory-mb")

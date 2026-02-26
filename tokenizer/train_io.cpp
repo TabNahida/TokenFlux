@@ -50,6 +50,35 @@ std::unordered_map<std::string, uint64_t> reduce_top_k_u64(std::unordered_map<st
     }
     return reduced;
 }
+
+bool count_total_records(const Config &cfg, const std::vector<std::string> &files, uint64_t &total_records, std::string &err)
+{
+    total_records = 0;
+    ProgressTracker scan_progress(static_cast<uint64_t>(files.size()), "scanning", cfg.progress_interval_ms);
+    for (const auto &path : files)
+    {
+        uint64_t local_docs = 0;
+        std::string local_err;
+        bool ok = for_each_text_record(
+            path, cfg.text_field,
+            [&](const std::string &text) {
+                if (!text.empty())
+                {
+                    ++local_docs;
+                }
+            },
+            local_err);
+        if (!ok)
+        {
+            err = local_err.empty() ? ("failed to scan input file: " + path) : local_err;
+            return false;
+        }
+        total_records += local_docs;
+        scan_progress.add(1, local_docs);
+    }
+    scan_progress.finish();
+    return true;
+}
 } // namespace
 
 std::string chunk_path_for_id(const Config &cfg, std::size_t chunk_id)
@@ -80,7 +109,29 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
         queue_cap = std::max<std::size_t>(cfg.threads * 4, 16);
     }
 
-    ProgressTracker progress(0, "processing", cfg.progress_interval_ms);
+    uint64_t total_records_est = 0;
+    std::size_t total_chunks_est = 0;
+    if (cfg.prescan_records)
+    {
+        if (!count_total_records(cfg, files, total_records_est, err))
+        {
+            return false;
+        }
+        if (total_records_est == 0)
+        {
+            err = "no text records found from inputs";
+            return false;
+        }
+        total_chunks_est =
+            static_cast<std::size_t>((total_records_est + static_cast<uint64_t>(cfg.records_per_chunk) - 1ull) /
+                                     static_cast<uint64_t>(cfg.records_per_chunk));
+    }
+
+    ProgressTracker progress(static_cast<uint64_t>(total_chunks_est), "processing", cfg.progress_interval_ms);
+    if (cfg.prescan_records && total_records_est > 0)
+    {
+        progress.set_total_docs(total_records_est);
+    }
 
     std::deque<ChunkTask> queue;
     std::mutex queue_mu;
@@ -210,7 +261,10 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
         }
         queue.push_back(std::move(task));
         lock.unlock();
-        progress.add_total(1);
+        if (!cfg.prescan_records)
+        {
+            progress.add_total(1);
+        }
         queue_cv.notify_all();
         return true;
     };

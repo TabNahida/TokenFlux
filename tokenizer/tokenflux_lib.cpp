@@ -244,6 +244,10 @@ void apply_env_overrides(Config &cfg, const std::unordered_map<std::string, std:
         cfg.progress_interval_ms = parse_size(*v, cfg.progress_interval_ms);
     if (auto v = get("WORDPIECE_CONTINUING_PREFIX"))
         cfg.wordpiece_continuing_prefix = *v;
+    if (auto v = get("PRESCAN_RECORDS"))
+        cfg.prescan_records = parse_bool(*v, cfg.prescan_records);
+    if (auto v = get("PRESCAN"))
+        cfg.prescan_records = parse_bool(*v, cfg.prescan_records);
     if (auto v = get("UNIGRAM_EM_ITERS"))
         cfg.unigram_em_iters = parse_size(*v, cfg.unigram_em_iters);
     if (auto v = get("UNIGRAM_SEED_MULTIPLIER"))
@@ -1806,18 +1810,24 @@ ProgressTracker::ProgressTracker(uint64_t total_chunks, const std::string &label
 {
     start_ = std::chrono::steady_clock::now();
     last_print_ = start_;
+    last_rate_ts_ = start_;
+    last_rate_chunks_ = 0;
+    last_rate_docs_ = 0;
 }
 
 void ProgressTracker::add_total(uint64_t chunks)
 {
     total_.fetch_add(chunks, std::memory_order_relaxed);
-    maybe_print(false);
 }
 
 void ProgressTracker::set_total(uint64_t chunks)
 {
     total_.store(chunks, std::memory_order_relaxed);
-    maybe_print(false);
+}
+
+void ProgressTracker::set_total_docs(uint64_t docs)
+{
+    total_docs_.store(docs, std::memory_order_relaxed);
 }
 
 void ProgressTracker::add(uint64_t chunks, uint64_t docs)
@@ -1855,11 +1865,28 @@ void ProgressTracker::maybe_print(bool force)
     }
     last_print_ = now;
     uint64_t total_chunks = total_.load(std::memory_order_relaxed);
+    uint64_t total_docs = total_docs_.load(std::memory_order_relaxed);
     uint64_t done_chunks = done_chunks_.load(std::memory_order_relaxed);
     uint64_t done_docs = done_docs_.load(std::memory_order_relaxed);
     double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(now - start_).count();
-    double chunk_rate = elapsed > 0.0 ? static_cast<double>(done_chunks) / elapsed : 0.0;
-    double doc_rate = elapsed > 0.0 ? static_cast<double>(done_docs) / elapsed : 0.0;
+    double interval = std::chrono::duration_cast<std::chrono::duration<double>>(now - last_rate_ts_).count();
+    uint64_t delta_chunks = done_chunks >= last_rate_chunks_ ? done_chunks - last_rate_chunks_ : 0;
+    uint64_t delta_docs = done_docs >= last_rate_docs_ ? done_docs - last_rate_docs_ : 0;
+    double chunk_rate = 0.0;
+    double doc_rate = 0.0;
+    if (interval > 0.0)
+    {
+        chunk_rate = static_cast<double>(delta_chunks) / interval;
+        doc_rate = static_cast<double>(delta_docs) / interval;
+    }
+    if (chunk_rate <= 0.0 && elapsed > 0.0)
+    {
+        chunk_rate = static_cast<double>(done_chunks) / elapsed;
+    }
+    if (doc_rate <= 0.0 && elapsed > 0.0)
+    {
+        doc_rate = static_cast<double>(done_docs) / elapsed;
+    }
     double pct = 0.0;
     if (total_chunks > 0)
     {
@@ -1880,9 +1907,14 @@ void ProgressTracker::maybe_print(bool force)
     {
         oss << "[" << label_ << "] chunks " << done_chunks;
     }
-    if (done_docs > 0)
+    if (done_docs > 0 || total_docs > 0)
     {
-        oss << " docs " << done_docs << " (" << std::setprecision(1) << (static_cast<double>(done_docs) / 1e6) << "M)";
+        oss << " docs " << done_docs;
+        if (total_docs > 0)
+        {
+            oss << "/" << total_docs;
+        }
+        oss << " (" << std::setprecision(1) << (static_cast<double>(done_docs) / 1e6) << "M)";
     }
     if (chunk_rate > 0.0)
     {
@@ -1898,6 +1930,9 @@ void ProgressTracker::maybe_print(bool force)
     }
     oss << "\n";
     std::cerr << oss.str();
+    last_rate_ts_ = now;
+    last_rate_chunks_ = done_chunks;
+    last_rate_docs_ = done_docs;
 }
 
 namespace
