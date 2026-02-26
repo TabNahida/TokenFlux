@@ -1,7 +1,7 @@
-#include "trainers.h"
+#include "trainers.hpp"
 
-#include "train_backend.h"
-#include "train_backend_common.h"
+#include "train_backend.hpp"
+#include "train_backend_common.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,7 +11,7 @@
 #include <iomanip>
 #include <string>
 
-#include "tokenflux_lib.h"
+#include "tokenflux_lib.hpp"
 
 namespace
 {

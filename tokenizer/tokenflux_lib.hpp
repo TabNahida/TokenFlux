@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "tokenflux_config.h"
+#include "tokenflux_config.hpp"
 
 std::unordered_map<std::string, std::string> read_env_file(const std::string &path);
 void apply_env_overrides(Config &cfg, const std::unordered_map<std::string, std::string> &env);

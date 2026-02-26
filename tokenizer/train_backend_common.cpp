@@ -1,9 +1,9 @@
-#include "train_backend_common.h"
+#include "train_backend_common.hpp"
 
 #include <algorithm>
 #include <cstdio>
 
-#include "tokenflux_lib.h"
+#include "tokenflux_lib.hpp"
 
 bool starts_with(const std::string &s, const std::string &prefix)
 {

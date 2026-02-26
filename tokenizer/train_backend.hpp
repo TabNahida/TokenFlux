@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "trainers.h"
+#include "trainers.hpp"
 
 bool train_backend_byte_bpe(const Config &cfg, const GlobalCountMap &global_counts, TrainArtifacts &artifacts,
                             std::string &err);

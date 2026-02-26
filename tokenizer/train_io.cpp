@@ -1,4 +1,4 @@
-#include "train_io.h"
+#include "train_io.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include "tokenflux_lib.h"
+#include "tokenflux_lib.hpp"
 
 namespace
 {

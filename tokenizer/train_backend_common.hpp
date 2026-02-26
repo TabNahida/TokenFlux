@@ -6,9 +6,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "tokenflux_bpe.h"
-#include "tokenflux_config.h"
-#include "train_io.h"
+#include "tokenflux_bpe.hpp"
+#include "tokenflux_config.hpp"
+#include "train_io.hpp"
 
 using SymbolMap = std::unordered_map<std::string, int>;
 

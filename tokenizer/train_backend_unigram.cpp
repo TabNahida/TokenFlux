@@ -1,4 +1,4 @@
-#include "train_backend.h"
+#include "train_backend.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-#include "train_backend_common.h"
+#include "train_backend_common.hpp"
 
 namespace
 {

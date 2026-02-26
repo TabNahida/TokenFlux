@@ -1,4 +1,4 @@
-#include "tokenflux_lib.h"
+#include "tokenflux_lib.hpp"
 
 #include <algorithm>
 #include <array>

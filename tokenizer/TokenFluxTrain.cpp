@@ -1,7 +1,7 @@
-#include "tokenflux_lib.h"
-#include "train_frontend.h"
-#include "train_io.h"
-#include "trainers.h"
+#include "tokenflux_lib.hpp"
+#include "train_frontend.hpp"
+#include "train_io.hpp"
+#include "trainers.hpp"
 
 #include <algorithm>
 #include <cstdint>

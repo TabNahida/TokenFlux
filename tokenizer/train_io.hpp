@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "tokenflux_config.h"
+#include "tokenflux_config.hpp"
 
 using LocalCountMap = std::unordered_map<std::string, uint32_t>;
 using GlobalCountMap = std::unordered_map<std::string, uint64_t>;

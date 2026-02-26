@@ -1,4 +1,4 @@
-#include "tokenflux_bpe.h"
+#include "tokenflux_bpe.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "tokenflux_lib.h"
+#include "tokenflux_lib.hpp"
 
 static uint64_t pair_key(int a, int b)
 {

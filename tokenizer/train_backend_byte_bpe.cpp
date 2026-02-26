@@ -1,11 +1,11 @@
-#include "train_backend.h"
+#include "train_backend.hpp"
 
 #include <unordered_map>
 #include <vector>
 
-#include "tokenflux_bpe.h"
-#include "tokenflux_lib.h"
-#include "train_backend_common.h"
+#include "tokenflux_bpe.hpp"
+#include "tokenflux_lib.hpp"
+#include "train_backend_common.hpp"
 
 bool train_backend_byte_bpe(const Config &cfg, const GlobalCountMap &global_counts, TrainArtifacts &artifacts,
                             std::string &err)

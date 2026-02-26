@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 
-#include "tokenflux_config.h"
-#include "train_io.h"
+#include "tokenflux_config.hpp"
+#include "train_io.hpp"
 
 struct TrainArtifacts
 {

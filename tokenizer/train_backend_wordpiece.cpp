@@ -1,4 +1,4 @@
-#include "train_backend.h"
+#include "train_backend.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "train_backend_common.h"
+#include "train_backend_common.hpp"
 
 namespace
 {

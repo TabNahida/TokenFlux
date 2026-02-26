@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "tokenflux_config.h"
+#include "tokenflux_config.hpp"
 
 std::string trainer_kind_to_string(TrainerKind kind);
 bool parse_trainer_kind(const std::string &text, TrainerKind &kind);
