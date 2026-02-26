@@ -5,7 +5,9 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -39,6 +41,7 @@ struct Args
     std::size_t threads = 0;
     std::size_t cache_max_entries = 50'000;
     std::size_t max_memory_mb = 0; // 0 = unlimited
+    bool prescan_records = true;
     bool resume = true;
 };
 
@@ -159,7 +162,7 @@ static void print_usage()
               << "  --tokenizer <path>           tokenizer.json path (default: tokenizer.json)\n"
               << "  --out-dir <path>             Output directory (default: data/tokens)\n"
               << "  --max-tokens-per-shard <n>   Tokens per train shard (default: 50000000)\n"
-              << "  --encode-batch-size <n>      CLI compatibility only (unused, default: 256)\n"
+              << "  --encode-batch-size <n>      Docs per in-file encode batch (default: 256)\n"
               << "  --min-chars <n>              Min chars per doc (default: 1)\n"
               << "  --max-chars <n>              Max chars per doc (default: 20000)\n"
               << "  --max-docs <n>               CLI compatibility only (must be 0)\n"
@@ -168,6 +171,7 @@ static void print_usage()
               << "  --threads <n>                Worker threads (0=auto)\n"
               << "  --cache-max-entries <n>      Max in-memory token-piece cache entries per worker (default: 50000, 0=disable)\n"
               << "  --max-memory-mb <n>          Soft memory cap for per-file processing (default: 0=unlimited)\n"
+              << "  --prescan / --no-prescan     Pre-scan docs for stable ETA/docs total (default: on)\n"
               << "  --resume / --no-resume       Reuse completed-file list for resume (default: on)\n"
               << "  --progress-every <n>         CLI compatibility only (unused)\n"
               << "  --help                       Show this help\n";
@@ -382,6 +386,14 @@ static bool parse_args(int argc, char **argv, Args &args)
                 return false;
             }
             args.max_memory_mb = x;
+        }
+        else if (arg == "--prescan")
+        {
+            args.prescan_records = true;
+        }
+        else if (arg == "--no-prescan")
+        {
+            args.prescan_records = false;
         }
         else if (arg == "--resume")
         {
@@ -2348,6 +2360,56 @@ static std::size_t utf8_char_count(const std::string &s)
     return n;
 }
 
+static bool prescan_total_docs(const std::vector<FileTask> &tasks, const Args &args, std::uint64_t &total_docs,
+                               std::string &err)
+{
+    total_docs = 0;
+    ProgressTracker scan_progress(tasks.size(), "scanning", 1000);
+    constexpr std::uint64_t report_docs_batch = 512;
+
+    for (const auto &task : tasks)
+    {
+        std::uint64_t local_docs = 0;
+        std::uint64_t local_reported = 0;
+        std::string local_err;
+        bool ok = for_each_text_record(
+            task.path, args.text_field,
+            [&](const std::string &incoming_text) {
+                if (incoming_text.empty())
+                {
+                    return;
+                }
+                std::size_t chars = utf8_char_count(incoming_text);
+                if (chars < args.min_chars)
+                {
+                    return;
+                }
+                ++local_docs;
+                std::uint64_t pending = local_docs - local_reported;
+                if (pending >= report_docs_batch)
+                {
+                    scan_progress.add(0, pending);
+                    local_reported = local_docs;
+                }
+            },
+            local_err);
+        if (!ok)
+        {
+            err = local_err.empty() ? ("failed to scan input file: " + task.path) : local_err;
+            return false;
+        }
+        if (local_docs > local_reported)
+        {
+            scan_progress.add(0, local_docs - local_reported);
+        }
+        total_docs += local_docs;
+        scan_progress.add(1, 0);
+    }
+
+    scan_progress.finish();
+    return true;
+}
+
 static std::string shard_name(std::size_t idx)
 {
     std::ostringstream oss;
@@ -2638,8 +2700,9 @@ class ShardWriter
 };
 
 static bool process_file_to_shards(const FileTask &task, const Args &args, const TokenizerEncoder &tokenizer,
-                                   const PartSignature &sig, ShardWriter &shard_writer, PartResult &result,
-                                   const std::function<void(std::uint64_t)> &report_docs, std::string &err)
+                                   const PartSignature &sig, ShardWriter &shard_writer, std::size_t encode_threads,
+                                   PartResult &result, const std::function<void(std::uint64_t)> &report_docs,
+                                   std::string &err)
 {
     std::size_t flush_threshold_tokens = 256 * 1024;
     std::size_t effective_cache_max_entries = args.cache_max_entries;
@@ -2661,106 +2724,409 @@ static bool process_file_to_shards(const FileTask &task, const Args &args, const
         }
     }
 
-    std::vector<std::uint32_t> write_buffer;
-    write_buffer.reserve(std::min<std::size_t>(flush_threshold_tokens, 1 << 20));
-    std::unordered_map<std::string, std::vector<std::uint32_t>> cache;
-    if (effective_cache_max_entries > 0)
+    if (encode_threads <= 1)
     {
-        const std::size_t reserve_n = std::min<std::size_t>(effective_cache_max_entries, 1 << 16);
-        cache.reserve(reserve_n);
-    }
-
-    auto flush_buffer = [&]() -> bool {
-        if (write_buffer.empty())
+        std::vector<std::uint32_t> write_buffer;
+        write_buffer.reserve(std::min<std::size_t>(flush_threshold_tokens, 1 << 20));
+        std::unordered_map<std::string, std::vector<std::uint32_t>> cache;
+        if (effective_cache_max_entries > 0)
         {
-            return true;
+            const std::size_t reserve_n = std::min<std::size_t>(effective_cache_max_entries, 1 << 16);
+            cache.reserve(reserve_n);
         }
-        if (!shard_writer.append_tokens(write_buffer, err))
+
+        auto flush_buffer = [&]() -> bool {
+            if (write_buffer.empty())
+            {
+                return true;
+            }
+            if (!shard_writer.append_tokens(write_buffer, err))
+            {
+                return false;
+            }
+            write_buffer.clear();
+            return true;
+        };
+
+        constexpr std::uint64_t report_docs_batch = 128;
+        std::uint64_t docs_pending_report = 0;
+        bool callback_ok = true;
+        bool read_ok = for_each_text_record(
+            task.path, args.text_field,
+            [&](const std::string &incoming_text) {
+                if (!callback_ok)
+                {
+                    return;
+                }
+                if (incoming_text.empty())
+                {
+                    return;
+                }
+                std::string text = incoming_text;
+                std::size_t chars = utf8_char_count(text);
+                if (chars < args.min_chars)
+                {
+                    ++result.num_skipped;
+                    return;
+                }
+                if (args.max_chars > 0 && chars > args.max_chars)
+                {
+                    text = truncate_utf8(text, args.max_chars);
+                }
+
+                std::size_t before = write_buffer.size();
+                if (sig.bos_id >= 0)
+                {
+                    write_buffer.push_back(static_cast<std::uint32_t>(sig.bos_id));
+                }
+                tokenizer.encode_text_append(text, cache, write_buffer);
+                if (sig.eos_id >= 0)
+                {
+                    write_buffer.push_back(static_cast<std::uint32_t>(sig.eos_id));
+                }
+                if (effective_cache_max_entries == 0 || cache.size() > effective_cache_max_entries)
+                {
+                    cache.clear();
+                    cache.rehash(0);
+                }
+
+                ++result.num_docs;
+                ++docs_pending_report;
+                result.num_tokens += static_cast<std::uint64_t>(write_buffer.size() - before);
+                if (docs_pending_report >= report_docs_batch && report_docs)
+                {
+                    report_docs(docs_pending_report);
+                    docs_pending_report = 0;
+                }
+                if (write_buffer.size() >= flush_threshold_tokens)
+                {
+                    if (!flush_buffer())
+                    {
+                        callback_ok = false;
+                    }
+                }
+            },
+            err);
+        if (!read_ok)
+        {
+            if (err.empty())
+            {
+                err = "failed to read input file: " + task.path;
+            }
+            return false;
+        }
+        if (!callback_ok)
         {
             return false;
         }
-        write_buffer.clear();
+        if (!flush_buffer())
+        {
+            return false;
+        }
+        if (docs_pending_report > 0 && report_docs)
+        {
+            report_docs(docs_pending_report);
+        }
+
+        result.reused = false;
         return true;
+    }
+
+    struct EncodeBatchIn
+    {
+        std::size_t id = 0;
+        std::vector<std::string> docs;
+    };
+    struct EncodeBatchOut
+    {
+        std::size_t id = 0;
+        std::vector<std::uint32_t> tokens;
+        std::uint64_t num_docs = 0;
+        std::uint64_t num_tokens = 0;
     };
 
+    const std::size_t batch_docs = std::max<std::size_t>(args.encode_batch_size, 1);
+    const std::size_t in_queue_cap = std::max<std::size_t>(encode_threads * 4, 8);
     constexpr std::uint64_t report_docs_batch = 128;
-    std::uint64_t docs_pending_report = 0;
-    bool callback_ok = true;
-    bool read_ok = for_each_text_record(
-        task.path, args.text_field,
-        [&](const std::string &incoming_text) {
-            if (!callback_ok)
-            {
-                return;
-            }
-            if (incoming_text.empty())
-            {
-                return;
-            }
-            std::string text = incoming_text;
-            std::size_t chars = utf8_char_count(text);
-            if (chars < args.min_chars)
-            {
-                ++result.num_skipped;
-                return;
-            }
-            if (args.max_chars > 0 && chars > args.max_chars)
-            {
-                text = truncate_utf8(text, args.max_chars);
-            }
 
-            std::size_t before = write_buffer.size();
-            if (sig.bos_id >= 0)
-            {
-                write_buffer.push_back(static_cast<std::uint32_t>(sig.bos_id));
-            }
-            tokenizer.encode_text_append(text, cache, write_buffer);
-            if (sig.eos_id >= 0)
-            {
-                write_buffer.push_back(static_cast<std::uint32_t>(sig.eos_id));
-            }
-            if (effective_cache_max_entries == 0 || cache.size() > effective_cache_max_entries)
-            {
-                cache.clear();
-                cache.rehash(0);
-            }
+    std::atomic<bool> had_error{false};
+    std::mutex err_mu;
+    std::string shared_err;
 
-            ++result.num_docs;
-            ++docs_pending_report;
-            result.num_tokens += static_cast<std::uint64_t>(write_buffer.size() - before);
-            if (docs_pending_report >= report_docs_batch && report_docs)
-            {
-                report_docs(docs_pending_report);
-                docs_pending_report = 0;
-            }
-            if (write_buffer.size() >= flush_threshold_tokens)
-            {
-                if (!flush_buffer())
-                {
-                    callback_ok = false;
-                }
-            }
-        },
-        err);
-    if (!read_ok)
-    {
-        if (err.empty())
+    std::deque<EncodeBatchIn> in_queue;
+    std::mutex in_mu;
+    std::condition_variable in_cv;
+    bool input_done = false;
+
+    std::unordered_map<std::size_t, EncodeBatchOut> out_ready;
+    std::mutex out_mu;
+    std::condition_variable out_cv;
+    std::size_t workers_done = 0;
+
+    std::uint64_t skipped_docs = 0;
+    std::mutex skipped_mu;
+
+    auto set_error = [&](const std::string &message) {
+        had_error.store(true, std::memory_order_relaxed);
+        if (!message.empty())
         {
-            err = "failed to read input file: " + task.path;
+            std::lock_guard<std::mutex> lock(err_mu);
+            if (shared_err.empty())
+            {
+                shared_err = message;
+            }
         }
-        return false;
-    }
-    if (!callback_ok)
+        in_cv.notify_all();
+        out_cv.notify_all();
+    };
+
+    auto producer = [&]() {
+        std::size_t next_batch_id = 0;
+        EncodeBatchIn pending;
+        pending.id = next_batch_id;
+        pending.docs.reserve(batch_docs);
+        std::uint64_t local_skipped = 0;
+
+        auto push_pending = [&]() -> bool {
+            if (pending.docs.empty())
+            {
+                return true;
+            }
+            std::unique_lock<std::mutex> lock(in_mu);
+            in_cv.wait(lock, [&]() { return had_error.load(std::memory_order_relaxed) || in_queue.size() < in_queue_cap; });
+            if (had_error.load(std::memory_order_relaxed))
+            {
+                return false;
+            }
+            in_queue.push_back(std::move(pending));
+            pending = {};
+            ++next_batch_id;
+            pending.id = next_batch_id;
+            pending.docs.reserve(batch_docs);
+            lock.unlock();
+            in_cv.notify_all();
+            return true;
+        };
+
+        std::string local_err;
+        bool callback_ok = true;
+        bool read_ok = for_each_text_record(
+            task.path, args.text_field,
+            [&](const std::string &incoming_text) {
+                if (!callback_ok || had_error.load(std::memory_order_relaxed))
+                {
+                    return;
+                }
+                if (incoming_text.empty())
+                {
+                    return;
+                }
+                std::string text = incoming_text;
+                std::size_t chars = utf8_char_count(text);
+                if (chars < args.min_chars)
+                {
+                    ++local_skipped;
+                    return;
+                }
+                if (args.max_chars > 0 && chars > args.max_chars)
+                {
+                    text = truncate_utf8(text, args.max_chars);
+                }
+                pending.docs.push_back(std::move(text));
+                if (pending.docs.size() >= batch_docs)
+                {
+                    if (!push_pending())
+                    {
+                        callback_ok = false;
+                    }
+                }
+            },
+            local_err);
+
+        if (read_ok && callback_ok && !had_error.load(std::memory_order_relaxed))
+        {
+            if (!push_pending())
+            {
+                callback_ok = false;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(skipped_mu);
+            skipped_docs = local_skipped;
+        }
+
+        if (!read_ok)
+        {
+            set_error(local_err.empty() ? ("failed to read input file: " + task.path) : local_err);
+        }
+        else if (!callback_ok && !had_error.load(std::memory_order_relaxed))
+        {
+            set_error("failed to enqueue encode batches");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(in_mu);
+            input_done = true;
+        }
+        in_cv.notify_all();
+    };
+
+    auto worker = [&]() {
+        std::unordered_map<std::string, std::vector<std::uint32_t>> local_cache;
+        if (effective_cache_max_entries > 0)
+        {
+            const std::size_t reserve_n = std::min<std::size_t>(effective_cache_max_entries, 1 << 16);
+            local_cache.reserve(reserve_n);
+        }
+
+        while (true)
+        {
+            EncodeBatchIn in_batch;
+            {
+                std::unique_lock<std::mutex> lock(in_mu);
+                in_cv.wait(lock, [&]() {
+                    return had_error.load(std::memory_order_relaxed) || !in_queue.empty() || input_done;
+                });
+                if (had_error.load(std::memory_order_relaxed) && in_queue.empty())
+                {
+                    break;
+                }
+                if (in_queue.empty())
+                {
+                    if (input_done)
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                in_batch = std::move(in_queue.front());
+                in_queue.pop_front();
+            }
+            in_cv.notify_all();
+
+            EncodeBatchOut out_batch;
+            out_batch.id = in_batch.id;
+            for (const auto &text : in_batch.docs)
+            {
+                if (sig.bos_id >= 0)
+                {
+                    out_batch.tokens.push_back(static_cast<std::uint32_t>(sig.bos_id));
+                }
+                tokenizer.encode_text_append(text, local_cache, out_batch.tokens);
+                if (sig.eos_id >= 0)
+                {
+                    out_batch.tokens.push_back(static_cast<std::uint32_t>(sig.eos_id));
+                }
+                ++out_batch.num_docs;
+            }
+            out_batch.num_tokens = static_cast<std::uint64_t>(out_batch.tokens.size());
+            if (effective_cache_max_entries == 0 || local_cache.size() > effective_cache_max_entries)
+            {
+                local_cache.clear();
+                local_cache.rehash(0);
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(out_mu);
+                out_ready.emplace(out_batch.id, std::move(out_batch));
+            }
+            out_cv.notify_all();
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(out_mu);
+            ++workers_done;
+        }
+        out_cv.notify_all();
+    };
+
+    std::thread producer_thread(producer);
+
+    std::vector<std::thread> encode_workers;
+    encode_workers.reserve(encode_threads);
+    for (std::size_t i = 0; i < encode_threads; ++i)
     {
-        return false;
+        encode_workers.emplace_back(worker);
     }
-    if (!flush_buffer())
+
+    std::size_t next_write_batch = 0;
+    std::uint64_t docs_pending_report = 0;
+    while (true)
     {
-        return false;
+        EncodeBatchOut out_batch;
+        bool has_batch = false;
+        {
+            std::unique_lock<std::mutex> lock(out_mu);
+            out_cv.wait(lock, [&]() {
+                return had_error.load(std::memory_order_relaxed) || out_ready.find(next_write_batch) != out_ready.end() ||
+                       workers_done == encode_threads;
+            });
+
+            auto it = out_ready.find(next_write_batch);
+            if (it != out_ready.end())
+            {
+                out_batch = std::move(it->second);
+                out_ready.erase(it);
+                has_batch = true;
+            }
+            else if (workers_done == encode_threads)
+            {
+                break;
+            }
+        }
+
+        if (!has_batch)
+        {
+            if (had_error.load(std::memory_order_relaxed))
+            {
+                break;
+            }
+            continue;
+        }
+
+        if (!shard_writer.append_tokens(out_batch.tokens, err))
+        {
+            set_error(err);
+            break;
+        }
+        result.num_docs += out_batch.num_docs;
+        result.num_tokens += out_batch.num_tokens;
+        docs_pending_report += out_batch.num_docs;
+        if (docs_pending_report >= report_docs_batch && report_docs)
+        {
+            report_docs(docs_pending_report);
+            docs_pending_report = 0;
+        }
+        ++next_write_batch;
     }
+
+    producer_thread.join();
+    for (auto &t : encode_workers)
+    {
+        t.join();
+    }
+
     if (docs_pending_report > 0 && report_docs)
     {
         report_docs(docs_pending_report);
+    }
+    {
+        std::lock_guard<std::mutex> lock(skipped_mu);
+        result.num_skipped = skipped_docs;
+    }
+    if (had_error.load(std::memory_order_relaxed))
+    {
+        std::lock_guard<std::mutex> lock(err_mu);
+        if (!shared_err.empty())
+        {
+            err = shared_err;
+        }
+        else if (err.empty())
+        {
+            err = "failed to process file: " + task.path;
+        }
+        return false;
     }
 
     result.reused = false;
@@ -3082,13 +3448,36 @@ int main(int argc, char **argv)
     {
         worker_threads = std::max<std::size_t>(1, std::thread::hardware_concurrency());
     }
+    bool single_large_file_mode = tasks.size() == 1 && worker_threads > 1;
+    std::size_t file_worker_threads = single_large_file_mode ? 1 : worker_threads;
+    std::size_t per_file_encode_threads = single_large_file_mode ? worker_threads : 1;
+
+    std::uint64_t total_docs_est = 0;
+    if (args.prescan_records)
+    {
+        err.clear();
+        if (!prescan_total_docs(tasks, args, total_docs_est, err))
+        {
+            std::cerr << err << "\n";
+            return 1;
+        }
+    }
 
     std::cerr << "Files: " << files.size() << "\n";
-    std::cerr << "Threads: " << worker_threads << "\n";
+    std::cerr << "Threads(file-level): " << file_worker_threads << "\n";
+    if (per_file_encode_threads > 1)
+    {
+        std::cerr << "Threads(in-file encode): " << per_file_encode_threads << "\n";
+    }
     std::cerr << "Token piece cache entries/worker: " << args.cache_max_entries << "\n";
     if (args.max_memory_mb > 0)
     {
         std::cerr << "Memory cap/worker: " << args.max_memory_mb << " MiB\n";
+    }
+    std::cerr << "Prescan docs: " << (args.prescan_records ? "on" : "off") << "\n";
+    if (args.prescan_records && total_docs_est > 0)
+    {
+        std::cerr << "Total docs (estimated): " << total_docs_est << "\n";
     }
     std::cerr << "Tokenizer model: " << tokenizer.model_name() << "\n";
     std::cerr << "Tokenizer vocab: " << tokenizer.vocab_size() << " (dtype=" << dtype_name << ")\n";
@@ -3105,6 +3494,10 @@ int main(int argc, char **argv)
     std::mutex completion_mu;
     std::string shared_err;
     ProgressTracker progress(tasks.size(), "tokenizing", 1000);
+    if (args.prescan_records && total_docs_est > 0)
+    {
+        progress.set_total_docs(total_docs_est);
+    }
 
     auto worker = [&]() {
         auto report_docs = [&](std::uint64_t docs) {
@@ -3132,7 +3525,8 @@ int main(int argc, char **argv)
                 progress.add(1, r.num_docs);
                 continue;
             }
-            if (!process_file_to_shards(tasks[idx], args, tokenizer, sig, shard_writer, r, report_docs, local_err))
+            if (!process_file_to_shards(tasks[idx], args, tokenizer, sig, shard_writer, per_file_encode_threads, r,
+                                        report_docs, local_err))
             {
                 had_error.store(true);
                 std::lock_guard<std::mutex> lock(err_mu);
@@ -3158,8 +3552,8 @@ int main(int argc, char **argv)
     };
 
     std::vector<std::thread> threads;
-    threads.reserve(worker_threads);
-    for (std::size_t t = 0; t < worker_threads; ++t)
+    threads.reserve(file_worker_threads);
+    for (std::size_t t = 0; t < file_worker_threads; ++t)
     {
         threads.emplace_back(worker);
     }
