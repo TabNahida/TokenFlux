@@ -2,7 +2,7 @@
 
 TokenFlux is a high-performance C++ toolkit for tokenizer training and dataset pre-tokenization.
 
-Latest release: **0.2.3**. See [RELEASE](https://github.com/TabNahida/TokenFlux/releases).
+Latest release: **0.3.0**. See [RELEASE](https://github.com/TabNahida/TokenFlux/releases).
 
 ## Binaries
 
@@ -14,6 +14,12 @@ Build:
 ```bash
 xmake
 ```
+
+Python binding build output:
+
+- `build/windows/x64/release/tokenflux_cpp.pyd`
+
+The binding exposes `TrainConfig`, `TokenizeArgs`, `train(...)`, and `tokenize(...)`.
 
 ## Supported Training Backends
 
@@ -28,10 +34,9 @@ xmake
 
 ```bash
 xmake run TokenFluxTrain \
-  --data "data/*.jsonl" \
+  --data-list "data/inputs.list" \
   --trainer wordpiece \
   --vocab-size 50000 \
-  --records-per-chunk 5000 \
   --threads 8 \
   --output tokenizer.json \
   --vocab vocab.json
@@ -40,7 +45,8 @@ xmake run TokenFluxTrain \
 Key options:
 
 - `--trainer {byte_bpe|bpe|wordpiece|unigram}`
-- `--records-per-chunk` for fine-grained chunking/progress on large files
+- `--data-list` to read local paths, `file://...`, or `http(s)://...` entries from a local/remote list
+- `--records-per-chunk` as the upper bound for per-task document batching
 - `--threads` for multi-thread chunk processing
 - `--chunk-dir` for resumable count chunks
 
@@ -60,10 +66,11 @@ Example:
 xmake run TokenFluxTrain --threads 16 ...
 ```
 
-### 2) Chunk Granularity (`--records-per-chunk`)
+### 2) Stream Chunking (`--records-per-chunk`)
 
-- Smaller chunk size: smoother progress updates, more scheduling overhead.
-- Larger chunk size: higher raw throughput, rougher ETA/progress and larger per-task latency.
+- Streaming mode reads each file once, derives target batch size from file size, and uses `--records-per-chunk` as a hard cap.
+- Smaller chunk cap: smoother balancing on highly skewed corpora, more queue overhead.
+- Larger chunk cap: higher raw throughput on short-record corpora, less granular work stealing.
 - Recommended range: `2000`-`10000` for JSONL-like corpora.
 
 Example:
@@ -111,8 +118,8 @@ xmake run TokenFluxTrain --max-chars 12000 ...
 
 ### 7) Progress/ETA Stability (`--prescan`, `--progress-interval`)
 
-- Keep `--prescan` enabled (default) for stable `docs total` and more reliable ETA.
-- Use `--no-prescan` only when startup latency matters more than ETA quality.
+- Default is now single-pass streaming with file-count progress only.
+- Enable `--prescan` only if doc-total ETA matters more than reading each file once.
 - `--progress-interval` too small can add logging overhead; `200`-`1000` ms is a good range.
 
 ### 8) Backend-Specific Notes
@@ -144,7 +151,7 @@ It also respects tokenizer pre-tokenization style (`ByteLevel` / `WhitespaceSpli
 
 ```bash
 xmake run TokenFluxTokenize \
-  --data-glob "data/*.jsonl" \
+  --data-list "data/inputs.list" \
   --tokenizer tokenizer.json \
   --out-dir data/tokens \
   --threads 8 \
@@ -159,23 +166,50 @@ Output layout:
 
 Behavior notes:
 
+- Input can come from `--data-glob` or `--data-list`; list files can be local paths or remote `http(s)` URLs.
+- List entries can be local paths, `file://` URLs, or remote `http(s)` files. Remote inputs are cached in C++ before parsing.
 - Token output is written directly to `shards/` during tokenization (no duplicated part binaries).
 - `--resume` reuses `cache/completed.list` to skip completed source files.
+- Default progress is file-based streaming progress; `--prescan` is optional.
+
+### Python Binding Example
+
+```python
+import sys
+
+sys.path.insert(0, r"build\windows\x64\release")
+import tokenflux_cpp as tf
+
+cfg = tf.TrainConfig()
+cfg.data_list = r"artifacts\smoke\inputs.list"
+cfg.trainer = tf.TrainerKind.bpe
+cfg.vocab_size = 32000
+tf.train(cfg)
+
+args = tf.TokenizeArgs()
+args.data_list = r"artifacts\smoke\inputs.list"
+args.tokenizer_path = r"tokenizer.json"
+args.out_dir = r"data\tokens"
+tf.tokenize(args)
+```
 
 ## Project Structure
 
 - `tokenizer/TokenFluxTrain.cpp`: unified train entry.
 - `tokenizer/TokenFluxTokenize.cpp`: tokenize CLI entry.
+- `tokenizer/input_source.*`: local/remote input list resolution and remote cache materialization.
 - `tokenizer/tokenize_common.*`: tokenize shared args/types/helpers.
 - `tokenizer/tokenize_tokenizer.*`: tokenizer.json parsing + runtime encoder.
 - `tokenizer/tokenize_pipeline.*`: shard writing, resume state, and tokenize pipeline.
 - `tokenizer/train_frontend.*`: CLI/env parsing for training.
+- `tokenizer/train_pipeline.*`: train runtime entry used by CLI and Python binding.
 - `tokenizer/train_io.*`: chunked concurrent reading/writing + progress.
+- `tokenizer/tokenflux_pybind.cpp`: Python binding module.
 - `tokenizer/train_backend_*.cpp`: per-backend training implementations.
 - `tokenizer/train_backend_common.*`: shared training helpers, including BPE pair-merge training.
 - `tokenizer/trainers.*`: backend dispatch + tokenizer export.
 
 ## Notes
 
-- `.env` is supported for common defaults (for example `DATA_PATH`, `VOCAB_SIZE`, `THREADS`).
+- `.env` is supported for common defaults (for example `DATA_PATH`, `DATA_LIST`, `VOCAB_SIZE`, `THREADS`).
 - `TokenFluxTrain` and `TokenFluxTokenize` both support resumable workflows.

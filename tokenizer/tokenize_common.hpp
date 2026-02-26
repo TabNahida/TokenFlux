@@ -16,6 +16,7 @@ struct Args
 {
     std::string env_file = ".env";
     std::string data_glob;
+    std::string data_list;
     std::string text_field = "text";
     std::string tokenizer_path = "tokenizer.json";
     std::string out_dir = "data/tokens";
@@ -30,7 +31,7 @@ struct Args
     std::size_t threads = 0;
     std::size_t cache_max_entries = 50'000;
     std::size_t max_memory_mb = 0;
-    bool prescan_records = true;
+    bool prescan_records = false;
     bool resume = true;
 };
 
@@ -74,6 +75,7 @@ struct MergeRule
 struct FileTask
 {
     std::size_t index = 0;
+    std::string source;
     std::string path;
     std::string normalized_path;
     std::uint64_t file_size = 0;

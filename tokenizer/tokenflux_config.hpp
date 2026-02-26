@@ -16,6 +16,7 @@ struct Config
 {
     std::string env_path = ".env";
     std::string data_glob;
+    std::string data_list;
     std::string text_field = "text";
     std::string output_json = "tokenizer.json";
     std::string output_vocab = "vocab.json";
@@ -42,7 +43,7 @@ struct Config
     std::size_t unigram_seed_multiplier = 4;
     double unigram_prune_ratio = 0.75;
     std::string wordpiece_continuing_prefix = "##";
-    bool prescan_records = true; // pre-count total records for stable ETA/progress
+    bool prescan_records = false; // off by default for single-pass streaming
 
     std::string chunk_dir = "artifacts/bpe/chunks";
     bool resume = true;

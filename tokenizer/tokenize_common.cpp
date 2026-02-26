@@ -1,5 +1,6 @@
 #include "tokenize_common.hpp"
 
+#include "input_source.hpp"
 #include <cctype>
 #include <cstdio>
 #include <fstream>
@@ -24,18 +25,7 @@ bool ends_with(const std::string &s, const std::string &suffix)
 
 std::string normalize_path_for_compare(const std::string &path)
 {
-    std::string out = path;
-    for (char &c : out)
-    {
-        if (c == '\\')
-        {
-            c = '/';
-        }
-#ifdef _WIN32
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-#endif
-    }
-    return out;
+    return normalize_input_id(path);
 }
 
 void print_usage()
@@ -47,6 +37,7 @@ void print_usage()
               << "Options:\n"
               << "  --env-file <path>            Path to .env (default: .env)\n"
               << "  --data-glob <glob>           Override DATA_PATH from .env\n"
+              << "  --data-list <path|url>       Read input files from a local/remote list\n"
               << "  --text-field <name>          JSON field name (default: text)\n"
               << "  --tokenizer <path>           tokenizer.json path (default: tokenizer.json)\n"
               << "  --out-dir <path>             Output directory (default: data/tokens)\n"
@@ -60,7 +51,7 @@ void print_usage()
               << "  --threads <n>                Worker threads (0=auto)\n"
               << "  --cache-max-entries <n>      Max in-memory token-piece cache entries per worker (default: 50000, 0=disable)\n"
               << "  --max-memory-mb <n>          Soft memory cap for per-file processing (default: 0=unlimited)\n"
-              << "  --prescan / --no-prescan     Pre-scan docs for stable ETA/docs total (default: on)\n"
+              << "  --prescan / --no-prescan     Optional pre-scan docs for stable ETA/docs total (default: off)\n"
               << "  --resume / --no-resume       Reuse completed-file list for resume (default: on)\n"
               << "  --progress-every <n>         CLI compatibility only (unused)\n"
               << "  --help                       Show this help\n";
@@ -141,6 +132,16 @@ bool parse_args(int argc, char **argv, Args &args)
                 return false;
             }
             args.data_glob = v;
+            continue;
+        }
+        if (arg == "--data-list")
+        {
+            const char *v = need_value(arg);
+            if (!v)
+            {
+                return false;
+            }
+            args.data_list = v;
             continue;
         }
         if (arg == "--text-field")

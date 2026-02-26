@@ -194,6 +194,10 @@ void apply_env_overrides(Config &cfg, const std::unordered_map<std::string, std:
         cfg.data_glob = *v;
     if (auto v = get("DATA_GLOB"))
         cfg.data_glob = *v;
+    if (auto v = get("DATA_LIST"))
+        cfg.data_list = *v;
+    if (auto v = get("DATA_URL_LIST"))
+        cfg.data_list = *v;
     if (auto v = get("TEXT_FIELD"))
         cfg.text_field = *v;
     if (auto v = get("VOCAB_SIZE"))
@@ -1805,8 +1809,9 @@ static std::string format_duration(double seconds)
     return oss.str();
 }
 
-ProgressTracker::ProgressTracker(uint64_t total_chunks, const std::string &label, uint64_t interval_ms)
-    : label_(label), total_(total_chunks), interval_ms_(interval_ms)
+ProgressTracker::ProgressTracker(uint64_t total_chunks, const std::string &label, uint64_t interval_ms,
+                                 const std::string &unit_label)
+    : label_(label), unit_label_(unit_label), total_(total_chunks), interval_ms_(interval_ms)
 {
     start_ = std::chrono::steady_clock::now();
     last_print_ = start_;
@@ -1906,12 +1911,13 @@ void ProgressTracker::maybe_print(bool force)
     oss.setf(std::ios::fixed);
     if (total_chunks > 0)
     {
-        oss << "[" << label_ << "] chunks " << done_chunks << "/" << total_chunks << " (" << std::setprecision(1) << pct
+        oss << "[" << label_ << "] " << unit_label_ << " " << done_chunks << "/" << total_chunks << " ("
+            << std::setprecision(1) << pct
             << "%)";
     }
     else
     {
-        oss << "[" << label_ << "] chunks " << done_chunks;
+        oss << "[" << label_ << "] " << unit_label_ << " " << done_chunks;
     }
     if (done_docs > 0 || total_docs > 0)
     {
@@ -1935,8 +1941,9 @@ void ProgressTracker::maybe_print(bool force)
         oss << " ETA " << format_duration(eta);
     }
 
-    bool same_snapshot = has_printed_ && last_done_chunks_printed_ == done_chunks && last_done_docs_printed_ == done_docs &&
-                         last_total_chunks_printed_ == total_chunks && last_total_docs_printed_ == total_docs;
+    bool same_snapshot = has_printed_ && last_done_chunks_printed_ == done_chunks &&
+                         last_done_docs_printed_ == done_docs && last_total_chunks_printed_ == total_chunks &&
+                         last_total_docs_printed_ == total_docs;
     if (!same_snapshot)
     {
         std::string line = oss.str();

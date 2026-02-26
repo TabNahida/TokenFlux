@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "input_source.hpp"
 #include "tokenflux_config.hpp"
 
 using LocalCountMap = std::unordered_map<std::string, uint32_t>;
@@ -22,7 +23,7 @@ struct ChunkBuildStats
 
 std::string chunk_path_for_id(const Config &cfg, std::size_t chunk_id);
 
-bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files, std::size_t local_entry_cap,
+bool build_count_chunks(const Config &cfg, const std::vector<InputSource> &sources, std::size_t local_entry_cap,
                         const ProcessTextFn &process_text, ChunkBuildStats &stats, std::string &err);
 
 bool merge_count_chunks(const Config &cfg, std::size_t total_chunks, std::size_t global_entry_cap,

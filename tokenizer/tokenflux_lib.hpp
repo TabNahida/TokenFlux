@@ -76,7 +76,8 @@ bool merge_chunk_file(const std::string &path, std::unordered_map<std::string, u
 class ProgressTracker
 {
   public:
-    ProgressTracker(uint64_t total_chunks, const std::string &label, uint64_t interval_ms);
+    ProgressTracker(uint64_t total_chunks, const std::string &label, uint64_t interval_ms,
+                    const std::string &unit_label = "chunks");
     void add_total(uint64_t chunks);
     void set_total(uint64_t chunks);
     void set_total_docs(uint64_t docs);
@@ -87,6 +88,7 @@ class ProgressTracker
     void maybe_print(bool force);
 
     std::string label_;
+    std::string unit_label_ = "chunks";
     std::atomic<uint64_t> total_{0};
     std::atomic<uint64_t> total_docs_{0};
     uint64_t interval_ms_ = 1000;

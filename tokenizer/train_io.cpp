@@ -22,8 +22,28 @@ namespace
 struct ChunkTask
 {
     std::size_t chunk_id = 0;
+    std::size_t file_index = 0;
     std::vector<std::string> docs;
 };
+
+std::size_t derive_stream_target_bytes(std::uint64_t file_size, std::size_t worker_threads)
+{
+    const std::uint64_t min_target = 8ull * 1024ull * 1024ull;
+    const std::uint64_t max_target = 128ull * 1024ull * 1024ull;
+    if (worker_threads == 0)
+    {
+        worker_threads = 1;
+    }
+    if (file_size == 0)
+    {
+        return static_cast<std::size_t>(min_target);
+    }
+    std::uint64_t desired_parts = std::max<std::uint64_t>(1, std::min<std::uint64_t>(worker_threads * 2ull, 64ull));
+    std::uint64_t target = (file_size + desired_parts - 1ull) / desired_parts;
+    target = std::max<std::uint64_t>(target, min_target);
+    target = std::min<std::uint64_t>(target, max_target);
+    return static_cast<std::size_t>(target);
+}
 
 std::unordered_map<std::string, uint64_t> reduce_top_k_u64(std::unordered_map<std::string, uint64_t> &counts,
                                                            std::size_t top_k)
@@ -51,18 +71,18 @@ std::unordered_map<std::string, uint64_t> reduce_top_k_u64(std::unordered_map<st
     return reduced;
 }
 
-bool count_total_records(const Config &cfg, const std::vector<std::string> &files, uint64_t &total_records, std::string &err)
+bool count_total_records(const Config &cfg, const std::vector<InputSource> &sources, uint64_t &total_records, std::string &err)
 {
     total_records = 0;
-    ProgressTracker scan_progress(static_cast<uint64_t>(files.size()), "scanning", cfg.progress_interval_ms);
+    ProgressTracker scan_progress(static_cast<uint64_t>(sources.size()), "scanning", cfg.progress_interval_ms, "files");
     constexpr uint64_t scan_report_batch = 512;
-    for (const auto &path : files)
+    for (const auto &source : sources)
     {
         uint64_t local_docs = 0;
         uint64_t local_reported = 0;
         std::string local_err;
         bool ok = for_each_text_record(
-            path, cfg.text_field,
+            source.local_path, cfg.text_field,
             [&](const std::string &text) {
                 if (!text.empty())
                 {
@@ -78,7 +98,7 @@ bool count_total_records(const Config &cfg, const std::vector<std::string> &file
             local_err);
         if (!ok)
         {
-            err = local_err.empty() ? ("failed to scan input file: " + path) : local_err;
+            err = local_err.empty() ? ("failed to scan input file: " + source.source) : local_err;
             return false;
         }
         if (local_docs > local_reported)
@@ -100,11 +120,11 @@ std::string chunk_path_for_id(const Config &cfg, std::size_t chunk_id)
     return oss.str();
 }
 
-bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files, std::size_t local_entry_cap,
+bool build_count_chunks(const Config &cfg, const std::vector<InputSource> &sources, std::size_t local_entry_cap,
                         const ProcessTextFn &process_text, ChunkBuildStats &stats, std::string &err)
 {
     stats = {};
-    if (files.empty())
+    if (sources.empty())
     {
         err = "no files to process";
         return false;
@@ -122,10 +142,9 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
     }
 
     uint64_t total_records_est = 0;
-    std::size_t total_chunks_est = 0;
     if (cfg.prescan_records)
     {
-        if (!count_total_records(cfg, files, total_records_est, err))
+        if (!count_total_records(cfg, sources, total_records_est, err))
         {
             return false;
         }
@@ -134,12 +153,9 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
             err = "no text records found from inputs";
             return false;
         }
-        total_chunks_est =
-            static_cast<std::size_t>((total_records_est + static_cast<uint64_t>(cfg.records_per_chunk) - 1ull) /
-                                     static_cast<uint64_t>(cfg.records_per_chunk));
     }
 
-    ProgressTracker progress(static_cast<uint64_t>(total_chunks_est), "processing", cfg.progress_interval_ms);
+    ProgressTracker progress(static_cast<uint64_t>(sources.size()), "processing", cfg.progress_interval_ms, "files");
     if (cfg.prescan_records && total_records_est > 0)
     {
         progress.set_total_docs(total_records_est);
@@ -153,8 +169,33 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
     std::atomic<std::size_t> next_chunk_id{0};
     std::atomic<uint64_t> docs_done{0};
     std::atomic<bool> had_error{false};
+    std::vector<std::atomic<std::size_t>> pending_chunks(sources.size());
+    std::vector<std::atomic<bool>> file_read_done(sources.size());
+    std::vector<std::atomic<bool>> file_progress_done(sources.size());
+    for (std::size_t i = 0; i < sources.size(); ++i)
+    {
+        pending_chunks[i].store(0, std::memory_order_relaxed);
+        file_read_done[i].store(false, std::memory_order_relaxed);
+        file_progress_done[i].store(false, std::memory_order_relaxed);
+    }
     std::mutex err_mu;
     std::string shared_err;
+
+    auto maybe_finish_file = [&](std::size_t file_index) {
+        if (!file_read_done[file_index].load(std::memory_order_acquire))
+        {
+            return;
+        }
+        if (pending_chunks[file_index].load(std::memory_order_acquire) != 0)
+        {
+            return;
+        }
+        bool expected = false;
+        if (file_progress_done[file_index].compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        {
+            progress.add(1, 0);
+        }
+    };
 
     auto take_task = [&](ChunkTask &task) -> bool {
         std::unique_lock<std::mutex> lock(queue_mu);
@@ -200,7 +241,9 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
                     break;
                 }
                 docs_done.fetch_add(header.doc_count, std::memory_order_relaxed);
-                progress.add(1, header.doc_count);
+                progress.add(0, header.doc_count);
+                pending_chunks[task.file_index].fetch_sub(1, std::memory_order_acq_rel);
+                maybe_finish_file(task.file_index);
                 continue;
             }
 
@@ -257,7 +300,8 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
             }
 
             docs_done.fetch_add(docs, std::memory_order_relaxed);
-            progress.add(1, 0);
+            pending_chunks[task.file_index].fetch_sub(1, std::memory_order_acq_rel);
+            maybe_finish_file(task.file_index);
         }
     };
 
@@ -268,13 +312,14 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
         workers.emplace_back(worker);
     }
 
-    auto enqueue_docs = [&](std::vector<std::string> docs) -> bool {
+    auto enqueue_docs = [&](std::size_t file_index, std::vector<std::string> docs) -> bool {
         if (docs.empty())
         {
             return true;
         }
         ChunkTask task;
         task.chunk_id = next_chunk_id.fetch_add(1, std::memory_order_relaxed);
+        task.file_index = file_index;
         task.docs = std::move(docs);
 
         std::unique_lock<std::mutex> lock(queue_mu);
@@ -283,27 +328,27 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
         {
             return false;
         }
+        pending_chunks[file_index].fetch_add(1, std::memory_order_acq_rel);
         queue.push_back(std::move(task));
         lock.unlock();
-        if (!cfg.prescan_records)
-        {
-            progress.add_total(1);
-        }
         queue_cv.notify_all();
         return true;
     };
 
-    std::vector<std::string> batch;
-    batch.reserve(cfg.records_per_chunk);
-    for (const auto &path : files)
+    for (std::size_t file_index = 0; file_index < sources.size(); ++file_index)
     {
         if (had_error.load())
         {
             break;
         }
+        const auto &source = sources[file_index];
+        std::vector<std::string> batch;
+        batch.reserve(cfg.records_per_chunk);
+        std::size_t batch_bytes = 0;
+        std::size_t target_bytes = derive_stream_target_bytes(source.file_size, cfg.threads);
         std::string local_err;
         bool ok = for_each_text_record(
-            path, cfg.text_field,
+            source.local_path, cfg.text_field,
             [&](const std::string &text) {
                 if (had_error.load())
                 {
@@ -314,11 +359,13 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
                     return;
                 }
                 batch.push_back(text);
-                if (batch.size() >= cfg.records_per_chunk)
+                batch_bytes += text.size();
+                if (batch.size() >= cfg.records_per_chunk || batch_bytes >= target_bytes)
                 {
                     std::vector<std::string> flushed;
                     flushed.swap(batch);
-                    if (!enqueue_docs(std::move(flushed)))
+                    batch_bytes = 0;
+                    if (!enqueue_docs(file_index, std::move(flushed)))
                     {
                         had_error.store(true);
                     }
@@ -329,17 +376,18 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
         {
             std::lock_guard<std::mutex> lock(err_mu);
             had_error.store(true);
-            shared_err = local_err.empty() ? ("failed to read input file: " + path) : local_err;
+            shared_err = local_err.empty() ? ("failed to read input file: " + source.source) : local_err;
             break;
         }
-    }
-
-    if (!had_error.load() && !batch.empty())
-    {
-        if (!enqueue_docs(std::move(batch)))
+        if (!had_error.load() && !batch.empty())
         {
-            had_error.store(true);
+            if (!enqueue_docs(file_index, std::move(batch)))
+            {
+                had_error.store(true);
+            }
         }
+        file_read_done[file_index].store(true, std::memory_order_release);
+        maybe_finish_file(file_index);
     }
 
     {

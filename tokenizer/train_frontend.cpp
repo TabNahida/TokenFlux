@@ -162,6 +162,7 @@ void print_train_usage()
               << "Options:\n"
               << "  --env <path>                Path to .env (default: .env)\n"
               << "  --data <glob>               Data path glob (overrides DATA_PATH)\n"
+              << "  --data-list <path|url>      Read input files from a local/remote list\n"
               << "  --text-field <name>         JSON field name (default: text)\n"
               << "  --trainer <name>            byte_bpe | bpe | wordpiece | unigram\n"
               << "  --vocab-size <n>            Total vocab size incl. specials (default: 50000)\n"
@@ -176,7 +177,7 @@ void print_train_usage()
               << "  --max-chars <n>             Truncate docs to N chars (default: 20000)\n"
               << "  --threads <n>               Worker threads (0=auto)\n"
               << "  --queue-capacity <n>        Task queue capacity (0=auto)\n"
-              << "  --prescan / --no-prescan    Pre-scan total records for stable ETA (default: on)\n"
+              << "  --prescan / --no-prescan    Optional pre-scan total records for stable ETA (default: off)\n"
               << "  --max-memory-mb <n>         Soft memory cap for counting/pairs (default: 0=unlimited)\n"
               << "  --pair-max-entries <n>      Max tracked pair keys (default: auto from --max-memory-mb)\n"
               << "  --max-token-length <n>      Max token length for unigram seed (default: 16)\n"
@@ -231,6 +232,16 @@ bool parse_train_args(int argc, char **argv, Config &cfg, std::string &err, bool
                 return false;
             }
             cfg.data_glob = v;
+            continue;
+        }
+        if (arg == "--data-list")
+        {
+            const char *v = require_value(arg);
+            if (!v)
+            {
+                return false;
+            }
+            cfg.data_list = v;
             continue;
         }
         if (arg == "--text-field")

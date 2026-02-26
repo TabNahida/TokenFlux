@@ -1,5 +1,6 @@
 #include "tokenize_pipeline.hpp"
 
+#include "input_source.hpp"
 #include "tokenize_common.hpp"
 #include "tokenize_tokenizer.hpp"
 
@@ -184,7 +185,7 @@ static bool append_completion_record(const std::filesystem::path &path, const Fi
         err = "failed to append completion list: " + path.string();
         return false;
     }
-    out << std::quoted(task.path) << "\t" << task.file_size << "\t" << task.file_mtime << "\t" << result.num_docs
+    out << std::quoted(task.source) << "\t" << task.file_size << "\t" << task.file_mtime << "\t" << result.num_docs
         << "\t" << result.num_skipped << "\t" << result.num_tokens << "\n";
     out.flush();
     if (!out)
@@ -248,11 +249,30 @@ static std::size_t utf8_char_count(const std::string &s)
     return n;
 }
 
+static std::size_t derive_stream_target_bytes(std::uint64_t file_size, std::size_t worker_threads)
+{
+    const std::uint64_t min_target = 4ull * 1024ull * 1024ull;
+    const std::uint64_t max_target = 64ull * 1024ull * 1024ull;
+    if (worker_threads == 0)
+    {
+        worker_threads = 1;
+    }
+    if (file_size == 0)
+    {
+        return static_cast<std::size_t>(min_target);
+    }
+    std::uint64_t desired_parts = std::max<std::uint64_t>(1, std::min<std::uint64_t>(worker_threads * 4ull, 128ull));
+    std::uint64_t target = (file_size + desired_parts - 1ull) / desired_parts;
+    target = std::max<std::uint64_t>(target, min_target);
+    target = std::min<std::uint64_t>(target, max_target);
+    return static_cast<std::size_t>(target);
+}
+
 static bool prescan_total_docs(const std::vector<FileTask> &tasks, const Args &args, std::uint64_t &total_docs,
                                std::string &err)
 {
     total_docs = 0;
-    ProgressTracker scan_progress(tasks.size(), "scanning", 1000);
+    ProgressTracker scan_progress(tasks.size(), "scanning", 1000, "files");
     constexpr std::uint64_t report_docs_batch = 512;
 
     for (const auto &task : tasks)
@@ -283,7 +303,7 @@ static bool prescan_total_docs(const std::vector<FileTask> &tasks, const Args &a
             local_err);
         if (!ok)
         {
-            err = local_err.empty() ? ("failed to scan input file: " + task.path) : local_err;
+            err = local_err.empty() ? ("failed to scan input file: " + task.source) : local_err;
             return false;
         }
         if (local_docs > local_reported)
@@ -695,7 +715,7 @@ static bool process_file_to_shards(const FileTask &task, const Args &args, const
         {
             if (err.empty())
             {
-                err = "failed to read input file: " + task.path;
+                err = "failed to read input file: " + task.source;
             }
             return false;
         }
@@ -730,6 +750,7 @@ static bool process_file_to_shards(const FileTask &task, const Args &args, const
     };
 
     const std::size_t batch_docs = std::max<std::size_t>(args.encode_batch_size, 1);
+    const std::size_t target_batch_bytes = derive_stream_target_bytes(task.file_size, encode_threads);
     const std::size_t in_queue_cap = std::max<std::size_t>(encode_threads * 4, 8);
     constexpr std::uint64_t report_docs_batch = 128;
 
@@ -769,6 +790,7 @@ static bool process_file_to_shards(const FileTask &task, const Args &args, const
         EncodeBatchIn pending;
         pending.id = next_batch_id;
         pending.docs.reserve(batch_docs);
+        std::size_t pending_bytes = 0;
         std::uint64_t local_skipped = 0;
 
         auto push_pending = [&]() -> bool {
@@ -787,6 +809,7 @@ static bool process_file_to_shards(const FileTask &task, const Args &args, const
             ++next_batch_id;
             pending.id = next_batch_id;
             pending.docs.reserve(batch_docs);
+            pending_bytes = 0;
             lock.unlock();
             in_cv.notify_all();
             return true;
@@ -816,8 +839,9 @@ static bool process_file_to_shards(const FileTask &task, const Args &args, const
                 {
                     text = truncate_utf8(text, args.max_chars);
                 }
+                pending_bytes += text.size();
                 pending.docs.push_back(std::move(text));
-                if (pending.docs.size() >= batch_docs && !push_pending())
+                if ((pending.docs.size() >= batch_docs || pending_bytes >= target_batch_bytes) && !push_pending())
                 {
                     callback_ok = false;
                 }
@@ -839,7 +863,7 @@ static bool process_file_to_shards(const FileTask &task, const Args &args, const
 
         if (!read_ok)
         {
-            set_error(local_err.empty() ? ("failed to read input file: " + task.path) : local_err);
+            set_error(local_err.empty() ? ("failed to read input file: " + task.source) : local_err);
         }
         else if (!callback_ok && !had_error.load(std::memory_order_relaxed))
         {
@@ -1005,7 +1029,7 @@ static bool process_file_to_shards(const FileTask &task, const Args &args, const
         }
         else if (err.empty())
         {
-            err = "failed to process file: " + task.path;
+            err = "failed to process file: " + task.source;
         }
         return false;
     }
@@ -1038,7 +1062,7 @@ static bool remove_old_shards(const std::filesystem::path &out_dir)
 }
 
 static bool write_meta_json(const std::filesystem::path &meta_path, const Args &args, const std::string &data_glob,
-                            const std::vector<std::string> &input_files, std::size_t vocab_size,
+                            const std::string &data_list, const std::vector<std::string> &input_files, std::size_t vocab_size,
                             const std::string &dtype_name, std::int64_t eos_id, std::int64_t bos_id,
                             std::uint64_t num_docs, std::uint64_t num_skipped, std::uint64_t total_tokens,
                             const std::vector<ShardInfo> &shards, std::size_t reused_files, std::string &err)
@@ -1054,6 +1078,14 @@ static bool write_meta_json(const std::filesystem::path &meta_path, const Args &
     out << "  \"tokenizer_path\": \"" << json_escape(args.tokenizer_path) << "\",\n";
     out << "  \"text_field\": \"" << json_escape(args.text_field) << "\",\n";
     out << "  \"data_glob\": \"" << json_escape(data_glob) << "\",\n";
+    if (data_list.empty())
+    {
+        out << "  \"data_list\": null,\n";
+    }
+    else
+    {
+        out << "  \"data_list\": \"" << json_escape(data_list) << "\",\n";
+    }
     out << "  \"num_input_files\": " << input_files.size() << ",\n";
     out << "  \"input_files\": [\n";
     for (std::size_t i = 0; i < input_files.size(); ++i)
@@ -1120,6 +1152,7 @@ int run_tokenize(const Args &args)
 {
     auto env = read_env_file(args.env_file);
     std::string data_glob = args.data_glob;
+    std::string data_list = args.data_list;
     if (data_glob.empty())
     {
         auto it = env.find("DATA_PATH");
@@ -1128,16 +1161,25 @@ int run_tokenize(const Args &args)
             data_glob = it->second;
         }
     }
-    if (data_glob.empty())
+    if (data_list.empty())
     {
-        std::cerr << "DATA_PATH is missing. Set it in .env or pass --data-glob.\n";
-        return 1;
+        auto it = env.find("DATA_LIST");
+        if (it != env.end())
+        {
+            data_list = it->second;
+        }
     }
-
-    auto files = expand_data_files(data_glob);
-    if (files.empty())
+    if (data_list.empty())
     {
-        std::cerr << "No files matched: " << data_glob << "\n";
+        auto it = env.find("DATA_URL_LIST");
+        if (it != env.end())
+        {
+            data_list = it->second;
+        }
+    }
+    if (data_glob.empty() && data_list.empty())
+    {
+        std::cerr << "DATA_PATH / DATA_LIST is missing. Set it in .env or pass --data-glob/--data-list.\n";
         return 1;
     }
 
@@ -1194,6 +1236,7 @@ int run_tokenize(const Args &args)
         std::cerr << "failed to create shard dir under: " << out_root.string() << "\n";
         return 1;
     }
+    std::filesystem::path remote_cache_dir = cache_dir / "remote_inputs";
 
     std::string tokenizer_fp = make_tokenizer_fingerprint(args.tokenizer_path);
     if (tokenizer_fp.empty())
@@ -1202,24 +1245,33 @@ int run_tokenize(const Args &args)
         return 1;
     }
 
-    std::vector<FileTask> tasks;
-    tasks.reserve(files.size());
-    for (std::size_t i = 0; i < files.size(); ++i)
+    std::vector<InputSource> input_sources;
+    if (!resolve_input_sources(data_glob, data_list, remote_cache_dir.string(), input_sources, err))
     {
-        std::uint64_t sz = 0;
-        std::int64_t mt = 0;
-        if (!get_file_stat(files[i], sz, mt))
-        {
-            std::cerr << "failed to stat input file: " << files[i] << "\n";
-            return 1;
-        }
+        std::cerr << err << "\n";
+        return 1;
+    }
+    if (input_sources.empty())
+    {
+        std::cerr << "No files matched input settings.\n";
+        return 1;
+    }
+
+    std::vector<FileTask> tasks;
+    std::vector<std::string> input_files;
+    tasks.reserve(input_sources.size());
+    input_files.reserve(input_sources.size());
+    for (std::size_t i = 0; i < input_sources.size(); ++i)
+    {
         FileTask t;
         t.index = i;
-        t.path = files[i];
-        t.normalized_path = normalize_path_for_compare(files[i]);
-        t.file_size = sz;
-        t.file_mtime = mt;
+        t.source = input_sources[i].source;
+        t.path = input_sources[i].local_path;
+        t.normalized_path = input_sources[i].normalized_id;
+        t.file_size = input_sources[i].file_size;
+        t.file_mtime = input_sources[i].file_mtime;
         tasks.push_back(std::move(t));
+        input_files.push_back(input_sources[i].source);
     }
 
     PartSignature sig;
@@ -1282,7 +1334,7 @@ int run_tokenize(const Args &args)
         }
     }
 
-    std::cerr << "Files: " << files.size() << "\n";
+    std::cerr << "Files: " << input_files.size() << "\n";
     std::cerr << "Threads(file-level): " << file_worker_threads << "\n";
     if (per_file_encode_threads > 1)
     {
@@ -1304,6 +1356,7 @@ int run_tokenize(const Args &args)
     std::cerr << "Shard dir: " << shard_dir.string() << "\n";
     std::cerr << "Completed list: " << completed_list_path.string() << "\n";
     std::cerr << "Resume completed files: " << completion_records.size() << "\n";
+    std::cerr << "Input mode: " << (data_list.empty() ? "glob" : "list") << "\n";
 
     auto start_time = std::chrono::steady_clock::now();
     std::vector<PartResult> results(tasks.size());
@@ -1312,7 +1365,7 @@ int run_tokenize(const Args &args)
     std::mutex err_mu;
     std::mutex completion_mu;
     std::string shared_err;
-    ProgressTracker progress(tasks.size(), "tokenizing", 1000);
+    ProgressTracker progress(tasks.size(), "tokenizing", 1000, "files");
     if (args.prescan_records && total_docs_est > 0)
     {
         progress.set_total_docs(total_docs_est);
@@ -1418,7 +1471,8 @@ int run_tokenize(const Args &args)
     }
 
     std::filesystem::path meta_path = out_root / "meta.json";
-    if (!write_meta_json(meta_path, args, data_glob, files, tokenizer.vocab_size(), dtype_name, eos_id, bos_id, num_docs,
+    if (!write_meta_json(meta_path, args, data_glob, data_list, input_files, tokenizer.vocab_size(), dtype_name, eos_id,
+                         bos_id, num_docs,
                          num_skipped, total_tokens, shards, reused_files, err))
     {
         std::cerr << err << "\n";
@@ -1434,9 +1488,9 @@ int run_tokenize(const Args &args)
     }
     std::cerr << "done. docs=" << num_docs << " skipped=" << num_skipped << " total_tokens=" << total_tokens << "\n";
     std::cerr << "shards=" << shards.size() << " dtype=" << dtype_name << " out=" << shard_dir.string() << "\n";
-    std::cerr << "reused_files=" << reused_files << "/" << files.size() << "\n";
-    std::cerr << "throughput docs/s=" << static_cast<double>(num_docs) / elapsed
-              << " tok/s=" << static_cast<double>(total_tokens) / elapsed << "\n";
+        std::cerr << "reused_files=" << reused_files << "/" << input_files.size() << "\n";
+        std::cerr << "throughput docs/s=" << static_cast<double>(num_docs) / elapsed
+                  << " tok/s=" << static_cast<double>(total_tokens) / elapsed << "\n";
     return 0;
 }
 
