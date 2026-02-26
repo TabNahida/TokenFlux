@@ -1892,9 +1892,15 @@ void ProgressTracker::maybe_print(bool force)
     {
         pct = 100.0 * static_cast<double>(done_chunks) / static_cast<double>(total_chunks);
     }
-    double eta = (chunk_rate > 0.0 && total_chunks > done_chunks)
-                     ? static_cast<double>(total_chunks - done_chunks) / chunk_rate
-                     : 0.0;
+    double eta = 0.0;
+    if (total_docs > done_docs && doc_rate > 0.0)
+    {
+        eta = static_cast<double>(total_docs - done_docs) / doc_rate;
+    }
+    else if (total_chunks > done_chunks && chunk_rate > 0.0)
+    {
+        eta = static_cast<double>(total_chunks - done_chunks) / chunk_rate;
+    }
 
     std::ostringstream oss;
     oss.setf(std::ios::fixed);
@@ -1928,8 +1934,33 @@ void ProgressTracker::maybe_print(bool force)
     {
         oss << " ETA " << format_duration(eta);
     }
-    oss << "\n";
-    std::cerr << oss.str();
+
+    bool same_snapshot = has_printed_ && last_done_chunks_printed_ == done_chunks && last_done_docs_printed_ == done_docs &&
+                         last_total_chunks_printed_ == total_chunks && last_total_docs_printed_ == total_docs;
+    if (!same_snapshot)
+    {
+        std::string line = oss.str();
+        std::cerr << "\r" << line;
+        if (last_line_width_ > line.size())
+        {
+            std::cerr << std::string(last_line_width_ - line.size(), ' ');
+        }
+        std::cerr.flush();
+        last_line_width_ = line.size();
+        line_active_ = true;
+        has_printed_ = true;
+        last_done_chunks_printed_ = done_chunks;
+        last_done_docs_printed_ = done_docs;
+        last_total_chunks_printed_ = total_chunks;
+        last_total_docs_printed_ = total_docs;
+    }
+    if (force && line_active_)
+    {
+        std::cerr << "\n";
+        std::cerr.flush();
+        line_active_ = false;
+        last_line_width_ = 0;
+    }
     last_rate_ts_ = now;
     last_rate_chunks_ = done_chunks;
     last_rate_docs_ = done_docs;

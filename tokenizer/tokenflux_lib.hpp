@@ -97,5 +97,12 @@ class ProgressTracker
     std::chrono::steady_clock::time_point last_rate_ts_;
     uint64_t last_rate_chunks_ = 0;
     uint64_t last_rate_docs_ = 0;
+    uint64_t last_done_chunks_printed_ = 0;
+    uint64_t last_done_docs_printed_ = 0;
+    uint64_t last_total_chunks_printed_ = 0;
+    uint64_t last_total_docs_printed_ = 0;
+    std::size_t last_line_width_ = 0;
+    bool has_printed_ = false;
+    bool line_active_ = false;
     std::mutex print_mu_;
 };

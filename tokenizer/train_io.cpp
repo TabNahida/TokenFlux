@@ -55,9 +55,11 @@ bool count_total_records(const Config &cfg, const std::vector<std::string> &file
 {
     total_records = 0;
     ProgressTracker scan_progress(static_cast<uint64_t>(files.size()), "scanning", cfg.progress_interval_ms);
+    constexpr uint64_t scan_report_batch = 512;
     for (const auto &path : files)
     {
         uint64_t local_docs = 0;
+        uint64_t local_reported = 0;
         std::string local_err;
         bool ok = for_each_text_record(
             path, cfg.text_field,
@@ -65,6 +67,12 @@ bool count_total_records(const Config &cfg, const std::vector<std::string> &file
                 if (!text.empty())
                 {
                     ++local_docs;
+                    uint64_t pending = local_docs - local_reported;
+                    if (pending >= scan_report_batch)
+                    {
+                        scan_progress.add(0, pending);
+                        local_reported = local_docs;
+                    }
                 }
             },
             local_err);
@@ -73,8 +81,12 @@ bool count_total_records(const Config &cfg, const std::vector<std::string> &file
             err = local_err.empty() ? ("failed to scan input file: " + path) : local_err;
             return false;
         }
+        if (local_docs > local_reported)
+        {
+            scan_progress.add(0, local_docs - local_reported);
+        }
         total_records += local_docs;
-        scan_progress.add(1, local_docs);
+        scan_progress.add(1, 0);
     }
     scan_progress.finish();
     return true;
@@ -163,6 +175,7 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
     };
 
     auto worker = [&]() {
+        constexpr uint64_t process_report_batch = 128;
         while (true)
         {
             ChunkTask task;
@@ -204,10 +217,21 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
             local_counts.reserve(reserve_hint * 2 + 16);
 
             uint64_t docs = 0;
+            uint64_t docs_reported = 0;
             std::size_t reduce_counter = 0;
             for (const auto &text : task.docs)
             {
                 process_text(text, local_counts, docs, reduce_counter, local_entry_cap);
+                uint64_t pending = docs - docs_reported;
+                if (pending >= process_report_batch)
+                {
+                    progress.add(0, pending);
+                    docs_reported = docs;
+                }
+            }
+            if (docs > docs_reported)
+            {
+                progress.add(0, docs - docs_reported);
             }
 
             std::size_t keep = cfg.top_k;
@@ -233,7 +257,7 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
             }
 
             docs_done.fetch_add(docs, std::memory_order_relaxed);
-            progress.add(1, docs);
+            progress.add(1, 0);
         }
     };
 
