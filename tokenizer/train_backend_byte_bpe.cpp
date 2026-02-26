@@ -41,4 +41,3 @@ bool train_backend_byte_bpe(const Config &cfg, const GlobalCountMap &global_coun
     artifacts.token_scores.assign(artifacts.id_to_token.size(), -1.0);
     return true;
 }
-

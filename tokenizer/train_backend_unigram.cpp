@@ -32,8 +32,8 @@ struct UniToken
 };
 
 std::unordered_map<std::string, uint64_t> build_unigram_seed_counts(const GlobalCountMap &global_counts,
-                                                                     std::unordered_set<std::string> &required_chars,
-                                                                     std::size_t min_freq, std::size_t max_token_length)
+                                                                    std::unordered_set<std::string> &required_chars,
+                                                                    std::size_t min_freq, std::size_t max_token_length)
 {
     std::unordered_map<std::string, uint64_t> counts;
     counts.reserve(global_counts.size() * 4 + 1024);
@@ -92,7 +92,8 @@ std::vector<UnigramWord> build_unigram_words(const GlobalCountMap &global_counts
     return words;
 }
 
-void rebuild_unigram_index(const std::vector<UniToken> &tokens, std::unordered_map<std::string, std::vector<int>> &index)
+void rebuild_unigram_index(const std::vector<UniToken> &tokens,
+                           std::unordered_map<std::string, std::vector<int>> &index)
 {
     index.clear();
     index.reserve(tokens.size() / 2 + 16);
@@ -287,16 +288,17 @@ bool train_backend_unigram(const Config &cfg, const GlobalCountMap &global_count
         target_model_vocab = required_chars.size();
     }
 
-    std::size_t seed_target = std::max<std::size_t>(target_model_vocab * cfg.unigram_seed_multiplier,
-                                                    required_chars.size() + 32);
+    std::size_t seed_target =
+        std::max<std::size_t>(target_model_vocab * cfg.unigram_seed_multiplier, required_chars.size() + 32);
     std::vector<std::pair<std::string, uint64_t>> candidates;
     candidates.reserve(seed_counts.size());
     for (const auto &kv : seed_counts)
     {
         candidates.emplace_back(kv.first, kv.second);
     }
-    std::sort(candidates.begin(), candidates.end(),
-              [](const auto &a, const auto &b) { return a.second > b.second || (a.second == b.second && a.first < b.first); });
+    std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+        return a.second > b.second || (a.second == b.second && a.first < b.first);
+    });
 
     std::vector<UniToken> tokens;
     tokens.reserve(std::min<std::size_t>(seed_target, candidates.size()) + required_chars.size());
@@ -370,7 +372,8 @@ bool train_backend_unigram(const Config &cfg, const GlobalCountMap &global_count
         std::size_t keep_size = floor_keep;
         if (iter + 1 < cfg.unigram_em_iters)
         {
-            keep_size = static_cast<std::size_t>(std::ceil(static_cast<double>(tokens.size()) * cfg.unigram_prune_ratio));
+            keep_size =
+                static_cast<std::size_t>(std::ceil(static_cast<double>(tokens.size()) * cfg.unigram_prune_ratio));
             keep_size = std::max<std::size_t>(keep_size, floor_keep);
         }
         prune_unigram_tokens(tokens, keep_size);
@@ -406,7 +409,8 @@ bool train_backend_unigram(const Config &cfg, const GlobalCountMap &global_count
     artifacts.token_scores.assign(specials.size(), -100.0);
     for (std::size_t i = 0; i < model_tokens.size(); ++i)
     {
-        if (std::find(artifacts.id_to_token.begin(), artifacts.id_to_token.end(), model_tokens[i]) != artifacts.id_to_token.end())
+        if (std::find(artifacts.id_to_token.begin(), artifacts.id_to_token.end(), model_tokens[i]) !=
+            artifacts.id_to_token.end())
         {
             continue;
         }

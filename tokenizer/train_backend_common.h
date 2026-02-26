@@ -27,4 +27,3 @@ std::vector<Word> build_words_from_tokens(const GlobalCountMap &global_counts,
 void append_symbols_to_vocab(const std::vector<std::string> &specials, const std::vector<std::string> &symbols,
                              std::vector<std::string> &id_to_token);
 uint64_t pair_key(int a, int b);
-

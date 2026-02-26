@@ -301,4 +301,3 @@ void train_bpe(std::vector<Word> &words, std::vector<std::string> &id_to_symbol,
         std::cerr << "pair cap total skipped new pair keys: " << skipped_pairs_due_to_cap << "\n";
     }
 }
-

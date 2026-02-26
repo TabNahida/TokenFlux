@@ -94,4 +94,3 @@ class ProgressTracker
     std::chrono::steady_clock::time_point last_print_;
     std::mutex print_mu_;
 };
-

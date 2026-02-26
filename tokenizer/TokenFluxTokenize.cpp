@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -1701,8 +1701,7 @@ class TokenizerEncoder
         return true;
     }
 
-    void encode_text_append(const std::string &text,
-                            std::unordered_map<std::string, std::vector<std::uint32_t>> &cache,
+    void encode_text_append(const std::string &text, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache,
                             std::vector<std::uint32_t> &out_ids) const
     {
         std::vector<std::string> pieces;
@@ -1773,8 +1772,8 @@ class TokenizerEncoder
         return (static_cast<std::uint64_t>(a) << 32) | static_cast<std::uint64_t>(b);
     }
 
-    const std::vector<std::uint32_t> &
-    encode_piece_bpe(const std::string &encoded, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
+    const std::vector<std::uint32_t> &encode_piece_bpe(
+        const std::string &encoded, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
     {
         std::string cache_key = std::string("bpe:") + encoded;
         auto it_cache = cache.find(cache_key);
@@ -1878,8 +1877,8 @@ class TokenizerEncoder
         return inserted.first->second;
     }
 
-    const std::vector<std::uint32_t> &
-    encode_piece_wordpiece(const std::string &piece, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
+    const std::vector<std::uint32_t> &encode_piece_wordpiece(
+        const std::string &piece, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
     {
         std::string cache_key = std::string("wp:") + piece;
         auto it_cache = cache.find(cache_key);
@@ -1938,7 +1937,8 @@ class TokenizerEncoder
         return inserted.first->second;
     }
 
-    static bool unigram_match(const std::vector<std::string> &token_cps, const std::vector<std::string> &word_cps, std::size_t pos)
+    static bool unigram_match(const std::vector<std::string> &token_cps, const std::vector<std::string> &word_cps,
+                              std::size_t pos)
     {
         if (pos + token_cps.size() > word_cps.size())
         {
@@ -1954,8 +1954,8 @@ class TokenizerEncoder
         return true;
     }
 
-    const std::vector<std::uint32_t> &
-    encode_piece_unigram(const std::string &piece, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
+    const std::vector<std::uint32_t> &encode_piece_unigram(
+        const std::string &piece, std::unordered_map<std::string, std::vector<std::uint32_t>> &cache) const
     {
         std::string cache_key = std::string("uni:") + piece;
         auto it_cache = cache.find(cache_key);
@@ -2163,7 +2163,8 @@ static bool parse_u64_env(const std::unordered_map<std::string, std::string> &m,
     return parse_u64_arg(it->second, out);
 }
 
-static bool parse_i64_env(const std::unordered_map<std::string, std::string> &m, const std::string &k, std::int64_t &out)
+static bool parse_i64_env(const std::unordered_map<std::string, std::string> &m, const std::string &k,
+                          std::int64_t &out)
 {
     auto it = m.find(k);
     if (it == m.end())
@@ -2416,52 +2417,55 @@ static bool process_file_to_part(const FileTask &task, const Args &args, const T
     };
 
     bool callback_ok = true;
-    bool read_ok = for_each_text_record(task.path, args.text_field, [&](const std::string &incoming_text) {
-        if (!callback_ok)
-        {
-            return;
-        }
-        if (incoming_text.empty())
-        {
-            return;
-        }
-        std::string text = incoming_text;
-        std::size_t chars = utf8_char_count(text);
-        if (chars < args.min_chars)
-        {
-            ++result.num_skipped;
-            return;
-        }
-        if (args.max_chars > 0 && chars > args.max_chars)
-        {
-            text = truncate_utf8(text, args.max_chars);
-        }
-
-        std::size_t before = write_buffer.size();
-        if (sig.bos_id >= 0)
-        {
-            write_buffer.push_back(static_cast<std::uint32_t>(sig.bos_id));
-        }
-        tokenizer.encode_text_append(text, cache, write_buffer);
-        if (sig.eos_id >= 0)
-        {
-            write_buffer.push_back(static_cast<std::uint32_t>(sig.eos_id));
-        }
-        if (effective_cache_max_entries == 0 || cache.size() > effective_cache_max_entries)
-        {
-            cache.clear();
-            cache.rehash(0);
-        }
-        result.num_docs += 1;
-        result.num_tokens += static_cast<std::uint64_t>(write_buffer.size() - before);
-        if (write_buffer.size() >= flush_threshold_tokens)
-        {
-            if (!flush_buffer())
+    bool read_ok = for_each_text_record(
+        task.path, args.text_field,
+        [&](const std::string &incoming_text) {
+            if (!callback_ok)
             {
-                callback_ok = false;
+                return;
             }
-        }
-    }, err);
+            if (incoming_text.empty())
+            {
+                return;
+            }
+            std::string text = incoming_text;
+            std::size_t chars = utf8_char_count(text);
+            if (chars < args.min_chars)
+            {
+                ++result.num_skipped;
+                return;
+            }
+            if (args.max_chars > 0 && chars > args.max_chars)
+            {
+                text = truncate_utf8(text, args.max_chars);
+            }
+
+            std::size_t before = write_buffer.size();
+            if (sig.bos_id >= 0)
+            {
+                write_buffer.push_back(static_cast<std::uint32_t>(sig.bos_id));
+            }
+            tokenizer.encode_text_append(text, cache, write_buffer);
+            if (sig.eos_id >= 0)
+            {
+                write_buffer.push_back(static_cast<std::uint32_t>(sig.eos_id));
+            }
+            if (effective_cache_max_entries == 0 || cache.size() > effective_cache_max_entries)
+            {
+                cache.clear();
+                cache.rehash(0);
+            }
+            result.num_docs += 1;
+            result.num_tokens += static_cast<std::uint64_t>(write_buffer.size() - before);
+            if (write_buffer.size() >= flush_threshold_tokens)
+            {
+                if (!flush_buffer())
+                {
+                    callback_ok = false;
+                }
+            }
+        },
+        err);
     if (!read_ok)
     {
         if (err.empty())
@@ -2724,7 +2728,8 @@ static bool write_meta_json(const std::filesystem::path &meta_path, const Args &
     out << "  \"shards\": [\n";
     for (std::size_t i = 0; i < shards.size(); ++i)
     {
-        out << "    {\"file\": \"" << json_escape(shards[i].file) << "\", \"num_tokens\": " << shards[i].num_tokens << "}";
+        out << "    {\"file\": \"" << json_escape(shards[i].file) << "\", \"num_tokens\": " << shards[i].num_tokens
+            << "}";
         if (i + 1 < shards.size())
         {
             out << ",";
@@ -2975,15 +2980,16 @@ int main(int argc, char **argv)
     }
 
     std::filesystem::path meta_path = out_root / "meta.json";
-    if (!write_meta_json(meta_path, args, data_glob, files, tokenizer.vocab_size(), dtype_name, eos_id, bos_id, num_docs,
-                         num_skipped, total_tokens, shards, reused_files, err))
+    if (!write_meta_json(meta_path, args, data_glob, files, tokenizer.vocab_size(), dtype_name, eos_id, bos_id,
+                         num_docs, num_skipped, total_tokens, shards, reused_files, err))
     {
         std::cerr << err << "\n";
         return 1;
     }
 
     double elapsed =
-        std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start_time).count();
+        std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start_time)
+            .count();
     if (elapsed < 1e-9)
     {
         elapsed = 1e-9;
@@ -2995,4 +3001,3 @@ int main(int argc, char **argv)
               << " tok/s=" << static_cast<double>(total_tokens) / elapsed << "\n";
     return 0;
 }
-

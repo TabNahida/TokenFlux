@@ -264,4 +264,3 @@ bool write_trained_tokenizer(const Config &cfg, const TrainArtifacts &artifacts,
     }
     return true;
 }
-

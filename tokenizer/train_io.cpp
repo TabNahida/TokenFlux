@@ -224,26 +224,29 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
             break;
         }
         std::string local_err;
-        bool ok = for_each_text_record(path, cfg.text_field, [&](const std::string &text) {
-            if (had_error.load())
-            {
-                return;
-            }
-            if (text.empty())
-            {
-                return;
-            }
-            batch.push_back(text);
-            if (batch.size() >= cfg.records_per_chunk)
-            {
-                std::vector<std::string> flushed;
-                flushed.swap(batch);
-                if (!enqueue_docs(std::move(flushed)))
+        bool ok = for_each_text_record(
+            path, cfg.text_field,
+            [&](const std::string &text) {
+                if (had_error.load())
                 {
-                    had_error.store(true);
+                    return;
                 }
-            }
-        }, local_err);
+                if (text.empty())
+                {
+                    return;
+                }
+                batch.push_back(text);
+                if (batch.size() >= cfg.records_per_chunk)
+                {
+                    std::vector<std::string> flushed;
+                    flushed.swap(batch);
+                    if (!enqueue_docs(std::move(flushed)))
+                    {
+                        had_error.store(true);
+                    }
+                }
+            },
+            local_err);
         if (!ok)
         {
             std::lock_guard<std::mutex> lock(err_mu);
@@ -319,4 +322,3 @@ bool merge_count_chunks(const Config &cfg, std::size_t total_chunks, std::size_t
     merge_progress.finish();
     return true;
 }
-

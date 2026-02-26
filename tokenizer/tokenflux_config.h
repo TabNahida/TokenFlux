@@ -33,11 +33,11 @@ struct Config
     std::size_t max_chars_per_doc = 20000;
     std::size_t threads = 0; // 0 -> auto
     std::size_t progress_interval_ms = 1000;
-    std::size_t max_memory_mb = 0; // 0 -> unlimited
-    std::size_t pair_max_entries = 0; // 0 -> unlimited (or derived from max_memory_mb)
+    std::size_t max_memory_mb = 0;        // 0 -> unlimited
+    std::size_t pair_max_entries = 0;     // 0 -> unlimited (or derived from max_memory_mb)
     std::size_t records_per_chunk = 5000; // granularity for chunk write + progress
-    std::size_t queue_capacity = 0; // 0 -> derived from threads
-    std::size_t max_token_length = 16; // used by unigram trainer
+    std::size_t queue_capacity = 0;       // 0 -> derived from threads
+    std::size_t max_token_length = 16;    // used by unigram trainer
     std::size_t unigram_em_iters = 4;
     std::size_t unigram_seed_multiplier = 4;
     double unigram_prune_ratio = 0.75;

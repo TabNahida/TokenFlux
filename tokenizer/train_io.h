@@ -27,4 +27,3 @@ bool build_count_chunks(const Config &cfg, const std::vector<std::string> &files
 
 bool merge_count_chunks(const Config &cfg, std::size_t total_chunks, std::size_t global_entry_cap,
                         GlobalCountMap &global_counts, uint64_t &total_docs, std::string &err);
-

@@ -270,4 +270,3 @@ uint64_t pair_key(int a, int b)
 {
     return (static_cast<uint64_t>(static_cast<uint32_t>(a)) << 32) | static_cast<uint32_t>(b);
 }
-

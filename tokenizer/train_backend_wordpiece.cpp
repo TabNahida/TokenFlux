@@ -163,7 +163,8 @@ bool train_backend_wordpiece(const Config &cfg, const GlobalCountMap &global_cou
     }
 
     std::size_t target_vocab = calc_pair_target_vocab(cfg, id_to_symbol.size(), specials.size());
-    train_wordpiece(words, id_to_symbol, symbol_to_id, target_vocab, cfg.min_pair_freq, cfg.wordpiece_continuing_prefix);
+    train_wordpiece(words, id_to_symbol, symbol_to_id, target_vocab, cfg.min_pair_freq,
+                    cfg.wordpiece_continuing_prefix);
 
     append_symbols_to_vocab(specials, id_to_symbol, artifacts.id_to_token);
     artifacts.merges.clear();

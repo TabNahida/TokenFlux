@@ -11,19 +11,18 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <iterator>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <mutex>
-#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include <zlib.h>
 #include <lzma.h>
+#include <zlib.h>
 
 static std::string trim(const std::string &s)
 {
@@ -369,8 +368,8 @@ std::vector<std::string> expand_data_glob(const std::string &pattern)
         return files;
     }
 
-    static const std::array<std::string, 8> suffixes = {
-        ".json.gz", ".jsonl.gz", ".json.xz", ".jsonl.xz", ".json", ".jsonl", ".ndjson", ".parquet"};
+    static const std::array<std::string, 8> suffixes = {".json.gz", ".jsonl.gz", ".json.xz", ".jsonl.xz",
+                                                        ".json",    ".jsonl",    ".ndjson",  ".parquet"};
     std::string norm = normalize_path(pattern);
     std::vector<std::string> candidates;
     candidates.reserve(suffixes.size() + 2);
@@ -1279,9 +1278,9 @@ static bool for_each_text_record_in_json_document(const std::string &payload, co
 static bool read_parquet_records(const std::string &path, const std::string &text_field,
                                  const std::function<void(const std::string &)> &cb, std::string &err);
 
-static bool for_each_text_record_in_lines(const std::function<bool(const std::function<void(const std::string &)> &)> &reader,
-                                          const std::string &text_field, const std::function<void(const std::string &)> &cb,
-                                          std::size_t &matched)
+static bool for_each_text_record_in_lines(
+    const std::function<bool(const std::function<void(const std::string &)> &)> &reader, const std::string &text_field,
+    const std::function<void(const std::string &)> &cb, std::size_t &matched)
 {
     matched = 0;
     return reader([&](const std::string &line) {
@@ -1308,24 +1307,24 @@ bool for_each_text_record(const std::string &path, const std::string &text_field
     switch (fmt)
     {
     case InputFormat::jsonl:
-        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_text_lines(path, line_cb); }, text_field,
-                                           cb, matched))
+        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_text_lines(path, line_cb); },
+                                           text_field, cb, matched))
         {
             err = "failed to read text lines: " + path;
             return false;
         }
         return true;
     case InputFormat::jsonl_gz:
-        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_gz_lines(path, line_cb); }, text_field,
-                                           cb, matched))
+        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_gz_lines(path, line_cb); },
+                                           text_field, cb, matched))
         {
             err = "failed to read gz lines: " + path;
             return false;
         }
         return true;
     case InputFormat::jsonl_xz:
-        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_xz_lines(path, line_cb); }, text_field,
-                                           cb, matched))
+        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_xz_lines(path, line_cb); },
+                                           text_field, cb, matched))
         {
             err = "failed to read xz lines: " + path;
             return false;
@@ -1391,8 +1390,8 @@ bool for_each_text_record(const std::string &path, const std::string &text_field
     case InputFormat::unknown:
     default:
         // Fallback: try line-based json extraction for arbitrary extensions.
-        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_text_lines(path, line_cb); }, text_field,
-                                           cb, matched))
+        if (!for_each_text_record_in_lines([&](const auto &line_cb) { return read_text_lines(path, line_cb); },
+                                           text_field, cb, matched))
         {
             err = "unsupported input format: " + path;
             return false;
@@ -1648,7 +1647,8 @@ bool read_chunk_header(const std::string &path, ChunkHeader &header)
         header.version = legacy.version;
         header.doc_count = legacy.doc_count;
         header.entry_count = legacy.entry_count;
-        in.read(reinterpret_cast<char *>(&header.payload_uncompressed_bytes), sizeof(header.payload_uncompressed_bytes));
+        in.read(reinterpret_cast<char *>(&header.payload_uncompressed_bytes),
+                sizeof(header.payload_uncompressed_bytes));
         in.read(reinterpret_cast<char *>(&header.payload_compressed_bytes), sizeof(header.payload_compressed_bytes));
         if (!in)
         {
@@ -1865,16 +1865,16 @@ void ProgressTracker::maybe_print(bool force)
     {
         pct = 100.0 * static_cast<double>(done_chunks) / static_cast<double>(total_chunks);
     }
-    double eta =
-        (chunk_rate > 0.0 && total_chunks > done_chunks) ? static_cast<double>(total_chunks - done_chunks) / chunk_rate
-                                                          : 0.0;
+    double eta = (chunk_rate > 0.0 && total_chunks > done_chunks)
+                     ? static_cast<double>(total_chunks - done_chunks) / chunk_rate
+                     : 0.0;
 
     std::ostringstream oss;
     oss.setf(std::ios::fixed);
     if (total_chunks > 0)
     {
-        oss << "[" << label_ << "] chunks " << done_chunks << "/" << total_chunks << " (" << std::setprecision(1)
-            << pct << "%)";
+        oss << "[" << label_ << "] chunks " << done_chunks << "/" << total_chunks << " (" << std::setprecision(1) << pct
+            << "%)";
     }
     else
     {
@@ -2012,7 +2012,9 @@ struct PageHeader
 class BufferReader
 {
   public:
-    BufferReader(const uint8_t *data, std::size_t size) : data_(data), size_(size) {}
+    BufferReader(const uint8_t *data, std::size_t size) : data_(data), size_(size)
+    {
+    }
 
     bool read_u8(uint8_t &out)
     {
@@ -2045,8 +2047,14 @@ class BufferReader
         return true;
     }
 
-    std::size_t pos() const { return pos_; }
-    std::size_t remaining() const { return size_ - pos_; }
+    std::size_t pos() const
+    {
+        return pos_;
+    }
+    std::size_t remaining() const
+    {
+        return size_ - pos_;
+    }
 
   private:
     const uint8_t *data_ = nullptr;
@@ -2057,7 +2065,9 @@ class BufferReader
 class StreamReader
 {
   public:
-    StreamReader(std::ifstream &in, uint64_t start, uint64_t limit) : in_(in), pos_(start), limit_(limit) {}
+    StreamReader(std::ifstream &in, uint64_t start, uint64_t limit) : in_(in), pos_(start), limit_(limit)
+    {
+    }
 
     bool read_u8(uint8_t &out)
     {
@@ -2114,7 +2124,10 @@ class StreamReader
         return true;
     }
 
-    uint64_t pos() const { return pos_; }
+    uint64_t pos() const
+    {
+        return pos_;
+    }
 
   private:
     std::ifstream &in_;
@@ -2122,8 +2135,7 @@ class StreamReader
     uint64_t limit_ = 0;
 };
 
-template <typename Reader>
-static bool read_varint(Reader &r, uint64_t &out)
+template <typename Reader> static bool read_varint(Reader &r, uint64_t &out)
 {
     out = 0;
     int shift = 0;
@@ -2149,8 +2161,7 @@ static int64_t zigzag_decode(uint64_t n)
     return static_cast<int64_t>((n >> 1) ^ static_cast<uint64_t>(-static_cast<int64_t>(n & 1)));
 }
 
-template <typename Reader>
-static bool read_i32(Reader &r, int32_t &out)
+template <typename Reader> static bool read_i32(Reader &r, int32_t &out)
 {
     uint64_t raw = 0;
     if (!read_varint(r, raw))
@@ -2161,8 +2172,7 @@ static bool read_i32(Reader &r, int32_t &out)
     return true;
 }
 
-template <typename Reader>
-static bool read_i16(Reader &r, int16_t &out)
+template <typename Reader> static bool read_i16(Reader &r, int16_t &out)
 {
     int32_t tmp = 0;
     if (!read_i32(r, tmp))
@@ -2173,8 +2183,7 @@ static bool read_i16(Reader &r, int16_t &out)
     return true;
 }
 
-template <typename Reader>
-static bool read_i64(Reader &r, int64_t &out)
+template <typename Reader> static bool read_i64(Reader &r, int64_t &out)
 {
     uint64_t raw = 0;
     if (!read_varint(r, raw))
@@ -2185,8 +2194,7 @@ static bool read_i64(Reader &r, int64_t &out)
     return true;
 }
 
-template <typename Reader>
-static bool read_binary(Reader &r, std::string &out)
+template <typename Reader> static bool read_binary(Reader &r, std::string &out)
 {
     uint64_t len = 0;
     if (!read_varint(r, len))
@@ -2205,8 +2213,7 @@ static bool read_binary(Reader &r, std::string &out)
     return r.read_exact(reinterpret_cast<uint8_t *>(out.data()), static_cast<std::size_t>(len));
 }
 
-template <typename Reader>
-static bool read_bool(Reader &r, bool bool_inline, bool inline_value, bool &out)
+template <typename Reader> static bool read_bool(Reader &r, bool bool_inline, bool inline_value, bool &out)
 {
     if (bool_inline)
     {
@@ -2268,8 +2275,7 @@ static bool read_field_header(Reader &r, int16_t &last_id, int16_t &field_id, ui
     return true;
 }
 
-template <typename Reader>
-static bool read_list_header(Reader &r, uint64_t &size, uint8_t &elem_type)
+template <typename Reader> static bool read_list_header(Reader &r, uint64_t &size, uint8_t &elem_type)
 {
     uint8_t b = 0;
     if (!r.read_u8(b))
@@ -2286,8 +2292,7 @@ static bool read_list_header(Reader &r, uint64_t &size, uint8_t &elem_type)
     return true;
 }
 
-template <typename Reader>
-static bool read_map_header(Reader &r, uint64_t &size, uint8_t &key_type, uint8_t &val_type)
+template <typename Reader> static bool read_map_header(Reader &r, uint64_t &size, uint8_t &key_type, uint8_t &val_type)
 {
     if (!read_varint(r, size))
     {
@@ -2309,11 +2314,9 @@ static bool read_map_header(Reader &r, uint64_t &size, uint8_t &key_type, uint8_
     return true;
 }
 
-template <typename Reader>
-static bool skip_value(Reader &r, uint8_t ctype, bool bool_inline);
+template <typename Reader> static bool skip_value(Reader &r, uint8_t ctype, bool bool_inline);
 
-template <typename Reader>
-static bool skip_struct(Reader &r)
+template <typename Reader> static bool skip_struct(Reader &r)
 {
     int16_t last = 0;
     while (true)
@@ -2337,8 +2340,7 @@ static bool skip_struct(Reader &r)
     }
 }
 
-template <typename Reader>
-static bool skip_value(Reader &r, uint8_t ctype, bool bool_inline)
+template <typename Reader> static bool skip_value(Reader &r, uint8_t ctype, bool bool_inline)
 {
     switch (ctype)
     {
@@ -2798,8 +2800,7 @@ static bool parse_file_metadata(BufferReader &r, FileMetaData &out)
     }
 }
 
-template <typename Reader>
-static bool parse_data_page_header(Reader &r, DataPageHeader &out)
+template <typename Reader> static bool parse_data_page_header(Reader &r, DataPageHeader &out)
 {
     int16_t last = 0;
     while (true)
@@ -2852,8 +2853,7 @@ static bool parse_data_page_header(Reader &r, DataPageHeader &out)
     }
 }
 
-template <typename Reader>
-static bool parse_dictionary_page_header(Reader &r, DictionaryPageHeader &out)
+template <typename Reader> static bool parse_dictionary_page_header(Reader &r, DictionaryPageHeader &out)
 {
     int16_t last = 0;
     while (true)
@@ -2903,8 +2903,7 @@ static bool parse_dictionary_page_header(Reader &r, DictionaryPageHeader &out)
     }
 }
 
-template <typename Reader>
-static bool parse_data_page_header_v2(Reader &r, DataPageHeaderV2 &out)
+template <typename Reader> static bool parse_data_page_header_v2(Reader &r, DataPageHeaderV2 &out)
 {
     int16_t last = 0;
     while (true)
@@ -3069,7 +3068,8 @@ static bool decode_plain_byte_array(const uint8_t *data, std::size_t size, std::
                                     std::vector<std::string> &out, std::string &err);
 static bool decompress_page_payload(int32_t codec, const std::vector<uint8_t> &compressed, std::size_t expected_size,
                                     std::vector<uint8_t> &out, std::string &err);
-static bool parse_file_metadata_from_footer(std::ifstream &in, uint64_t &file_size, FileMetaData &meta, std::string &err);
+static bool parse_file_metadata_from_footer(std::ifstream &in, uint64_t &file_size, FileMetaData &meta,
+                                            std::string &err);
 static bool build_leaf_infos(const std::vector<SchemaElement> &schema, std::vector<LeafInfo> &leaves);
 static int choose_leaf_index(const std::vector<LeafInfo> &leaves, const std::string &text_field);
 static int64_t resolve_column_start(const ColumnMetaData &col);
@@ -3205,193 +3205,195 @@ static bool read_parquet_records(const std::string &path, const std::string &tex
                           " (start=" + std::to_string(start) + ", " + format_column_offsets(col) + ") in " + path;
                     return false;
                 }
-            if (page.compressed_page_size < 0 || page.uncompressed_page_size < 0)
-            {
-                err = "invalid parquet page size";
-                return false;
-            }
-
-            std::vector<uint8_t> compressed(static_cast<std::size_t>(page.compressed_page_size));
-            if (!compressed.empty() && !sr.read_exact(compressed.data(), compressed.size()))
-            {
-                err = "failed to read parquet page payload";
-                return false;
-            }
-
-            if (page.type == PAGE_DICTIONARY)
-            {
-                if (!page.has_dictionary_page_header)
+                if (page.compressed_page_size < 0 || page.uncompressed_page_size < 0)
                 {
-                    err = "missing parquet dictionary page header";
-                    return false;
-                }
-                if (page.dictionary_page_header.encoding != ENC_PLAIN)
-                {
-                    err = "unsupported parquet dictionary encoding";
-                    return false;
-                }
-                std::vector<uint8_t> payload;
-                if (!decompress_page_payload(col.codec, compressed, static_cast<std::size_t>(page.uncompressed_page_size),
-                                             payload, err))
-                {
-                    return false;
-                }
-                if (!decode_plain_byte_array(payload.data(), payload.size(),
-                                             static_cast<std::size_t>(page.dictionary_page_header.num_values), dictionary,
-                                             err))
-                {
-                    return false;
-                }
-                continue;
-            }
-
-            if (page.type == PAGE_DATA)
-            {
-                if (!page.has_data_page_header)
-                {
-                    err = "missing parquet data page header";
-                    return false;
-                }
-                if (page.data_page_header.num_values < 0)
-                {
-                    err = "invalid parquet data page value count";
-                    return false;
-                }
-                std::size_t page_value_count = static_cast<std::size_t>(page.data_page_header.num_values);
-                std::vector<uint8_t> payload;
-                if (!decompress_page_payload(col.codec, compressed, static_cast<std::size_t>(page.uncompressed_page_size),
-                                             payload, err))
-                {
+                    err = "invalid parquet page size";
                     return false;
                 }
 
-                std::size_t pos = 0;
-                std::vector<uint32_t> rep_levels;
-                std::vector<uint32_t> def_levels;
-                if (!decode_levels_v1(payload.data(), payload.size(), pos, static_cast<uint32_t>(leaf.max_repetition_level),
-                                      page.data_page_header.repetition_level_encoding, page_value_count, rep_levels, err))
+                std::vector<uint8_t> compressed(static_cast<std::size_t>(page.compressed_page_size));
+                if (!compressed.empty() && !sr.read_exact(compressed.data(), compressed.size()))
                 {
-                    return false;
-                }
-                if (!decode_levels_v1(payload.data(), payload.size(), pos, static_cast<uint32_t>(leaf.max_definition_level),
-                                      page.data_page_header.definition_level_encoding, page_value_count, def_levels, err))
-                {
+                    err = "failed to read parquet page payload";
                     return false;
                 }
 
-                if (leaf.max_repetition_level > 0)
+                if (page.type == PAGE_DICTIONARY)
                 {
-                    for (uint32_t r : rep_levels)
+                    if (!page.has_dictionary_page_header)
                     {
-                        if (r != 0)
-                        {
-                            err = "repeated parquet pages are not supported";
-                            return false;
-                        }
-                    }
-                }
-
-                if (pos > payload.size())
-                {
-                    err = "invalid parquet data page payload";
-                    return false;
-                }
-                if (!emit_text_values(page.data_page_header.encoding, payload.data() + pos, payload.size() - pos,
-                                      page_value_count, def_levels, leaf.max_definition_level, dictionary, cb, err))
-                {
-                    return false;
-                }
-                values_seen += static_cast<int64_t>(page_value_count);
-                continue;
-            }
-
-            if (page.type == PAGE_DATA_V2)
-            {
-                if (!page.has_data_page_header_v2)
-                {
-                    err = "missing parquet data page v2 header";
-                    return false;
-                }
-                if (page.data_page_header_v2.num_values < 0)
-                {
-                    err = "invalid parquet data page v2 value count";
-                    return false;
-                }
-                std::size_t page_value_count = static_cast<std::size_t>(page.data_page_header_v2.num_values);
-                std::size_t rep_len =
-                    static_cast<std::size_t>(std::max(0, page.data_page_header_v2.repetition_levels_byte_length));
-                std::size_t def_len =
-                    static_cast<std::size_t>(std::max(0, page.data_page_header_v2.definition_levels_byte_length));
-                if (rep_len + def_len > compressed.size())
-                {
-                    err = "invalid parquet data page v2 level lengths";
-                    return false;
-                }
-
-                const uint8_t *rep_ptr = compressed.data();
-                const uint8_t *def_ptr = compressed.data() + rep_len;
-                const uint8_t *val_ptr = compressed.data() + rep_len + def_len;
-                std::size_t val_comp_size = compressed.size() - rep_len - def_len;
-
-                std::vector<uint32_t> rep_levels;
-                std::vector<uint32_t> def_levels;
-                if (!decode_levels_v2(rep_ptr, rep_len, static_cast<uint32_t>(leaf.max_repetition_level), page_value_count,
-                                      rep_levels, err))
-                {
-                    return false;
-                }
-                if (!decode_levels_v2(def_ptr, def_len, static_cast<uint32_t>(leaf.max_definition_level), page_value_count,
-                                      def_levels, err))
-                {
-                    return false;
-                }
-
-                if (leaf.max_repetition_level > 0)
-                {
-                    for (uint32_t r : rep_levels)
-                    {
-                        if (r != 0)
-                        {
-                            err = "repeated parquet pages are not supported";
-                            return false;
-                        }
-                    }
-                }
-
-                std::vector<uint8_t> value_payload;
-                const uint8_t *value_data = val_ptr;
-                std::size_t value_size = val_comp_size;
-                if (page.data_page_header_v2.is_compressed)
-                {
-                    int32_t expected = page.uncompressed_page_size -
-                                       page.data_page_header_v2.repetition_levels_byte_length -
-                                       page.data_page_header_v2.definition_levels_byte_length;
-                    if (expected < 0)
-                    {
-                        err = "invalid parquet data page v2 uncompressed size";
+                        err = "missing parquet dictionary page header";
                         return false;
                     }
-                    std::vector<uint8_t> compressed_values(val_ptr, val_ptr + val_comp_size);
-                    if (!decompress_page_payload(col.codec, compressed_values, static_cast<std::size_t>(expected),
-                                                 value_payload, err))
+                    if (page.dictionary_page_header.encoding != ENC_PLAIN)
+                    {
+                        err = "unsupported parquet dictionary encoding";
+                        return false;
+                    }
+                    std::vector<uint8_t> payload;
+                    if (!decompress_page_payload(col.codec, compressed,
+                                                 static_cast<std::size_t>(page.uncompressed_page_size), payload, err))
                     {
                         return false;
                     }
-                    value_data = value_payload.data();
-                    value_size = value_payload.size();
+                    if (!decode_plain_byte_array(payload.data(), payload.size(),
+                                                 static_cast<std::size_t>(page.dictionary_page_header.num_values),
+                                                 dictionary, err))
+                    {
+                        return false;
+                    }
+                    continue;
                 }
 
-                if (!emit_text_values(page.data_page_header_v2.encoding, value_data, value_size, page_value_count,
-                                      def_levels, leaf.max_definition_level, dictionary, cb, err))
+                if (page.type == PAGE_DATA)
                 {
-                    return false;
-                }
-                values_seen += static_cast<int64_t>(page_value_count);
-                continue;
-            }
+                    if (!page.has_data_page_header)
+                    {
+                        err = "missing parquet data page header";
+                        return false;
+                    }
+                    if (page.data_page_header.num_values < 0)
+                    {
+                        err = "invalid parquet data page value count";
+                        return false;
+                    }
+                    std::size_t page_value_count = static_cast<std::size_t>(page.data_page_header.num_values);
+                    std::vector<uint8_t> payload;
+                    if (!decompress_page_payload(col.codec, compressed,
+                                                 static_cast<std::size_t>(page.uncompressed_page_size), payload, err))
+                    {
+                        return false;
+                    }
 
-            err = "unsupported parquet page type: " + std::to_string(page.type);
-            return false;
+                    std::size_t pos = 0;
+                    std::vector<uint32_t> rep_levels;
+                    std::vector<uint32_t> def_levels;
+                    if (!decode_levels_v1(
+                            payload.data(), payload.size(), pos, static_cast<uint32_t>(leaf.max_repetition_level),
+                            page.data_page_header.repetition_level_encoding, page_value_count, rep_levels, err))
+                    {
+                        return false;
+                    }
+                    if (!decode_levels_v1(
+                            payload.data(), payload.size(), pos, static_cast<uint32_t>(leaf.max_definition_level),
+                            page.data_page_header.definition_level_encoding, page_value_count, def_levels, err))
+                    {
+                        return false;
+                    }
+
+                    if (leaf.max_repetition_level > 0)
+                    {
+                        for (uint32_t r : rep_levels)
+                        {
+                            if (r != 0)
+                            {
+                                err = "repeated parquet pages are not supported";
+                                return false;
+                            }
+                        }
+                    }
+
+                    if (pos > payload.size())
+                    {
+                        err = "invalid parquet data page payload";
+                        return false;
+                    }
+                    if (!emit_text_values(page.data_page_header.encoding, payload.data() + pos, payload.size() - pos,
+                                          page_value_count, def_levels, leaf.max_definition_level, dictionary, cb, err))
+                    {
+                        return false;
+                    }
+                    values_seen += static_cast<int64_t>(page_value_count);
+                    continue;
+                }
+
+                if (page.type == PAGE_DATA_V2)
+                {
+                    if (!page.has_data_page_header_v2)
+                    {
+                        err = "missing parquet data page v2 header";
+                        return false;
+                    }
+                    if (page.data_page_header_v2.num_values < 0)
+                    {
+                        err = "invalid parquet data page v2 value count";
+                        return false;
+                    }
+                    std::size_t page_value_count = static_cast<std::size_t>(page.data_page_header_v2.num_values);
+                    std::size_t rep_len =
+                        static_cast<std::size_t>(std::max(0, page.data_page_header_v2.repetition_levels_byte_length));
+                    std::size_t def_len =
+                        static_cast<std::size_t>(std::max(0, page.data_page_header_v2.definition_levels_byte_length));
+                    if (rep_len + def_len > compressed.size())
+                    {
+                        err = "invalid parquet data page v2 level lengths";
+                        return false;
+                    }
+
+                    const uint8_t *rep_ptr = compressed.data();
+                    const uint8_t *def_ptr = compressed.data() + rep_len;
+                    const uint8_t *val_ptr = compressed.data() + rep_len + def_len;
+                    std::size_t val_comp_size = compressed.size() - rep_len - def_len;
+
+                    std::vector<uint32_t> rep_levels;
+                    std::vector<uint32_t> def_levels;
+                    if (!decode_levels_v2(rep_ptr, rep_len, static_cast<uint32_t>(leaf.max_repetition_level),
+                                          page_value_count, rep_levels, err))
+                    {
+                        return false;
+                    }
+                    if (!decode_levels_v2(def_ptr, def_len, static_cast<uint32_t>(leaf.max_definition_level),
+                                          page_value_count, def_levels, err))
+                    {
+                        return false;
+                    }
+
+                    if (leaf.max_repetition_level > 0)
+                    {
+                        for (uint32_t r : rep_levels)
+                        {
+                            if (r != 0)
+                            {
+                                err = "repeated parquet pages are not supported";
+                                return false;
+                            }
+                        }
+                    }
+
+                    std::vector<uint8_t> value_payload;
+                    const uint8_t *value_data = val_ptr;
+                    std::size_t value_size = val_comp_size;
+                    if (page.data_page_header_v2.is_compressed)
+                    {
+                        int32_t expected = page.uncompressed_page_size -
+                                           page.data_page_header_v2.repetition_levels_byte_length -
+                                           page.data_page_header_v2.definition_levels_byte_length;
+                        if (expected < 0)
+                        {
+                            err = "invalid parquet data page v2 uncompressed size";
+                            return false;
+                        }
+                        std::vector<uint8_t> compressed_values(val_ptr, val_ptr + val_comp_size);
+                        if (!decompress_page_payload(col.codec, compressed_values, static_cast<std::size_t>(expected),
+                                                     value_payload, err))
+                        {
+                            return false;
+                        }
+                        value_data = value_payload.data();
+                        value_size = value_payload.size();
+                    }
+
+                    if (!emit_text_values(page.data_page_header_v2.encoding, value_data, value_size, page_value_count,
+                                          def_levels, leaf.max_definition_level, dictionary, cb, err))
+                    {
+                        return false;
+                    }
+                    values_seen += static_cast<int64_t>(page_value_count);
+                    continue;
+                }
+
+                err = "unsupported parquet page type: " + std::to_string(page.type);
+                return false;
             }
 
             if (retry_with_next_start)
@@ -3831,7 +3833,8 @@ static bool decompress_page_payload(int32_t codec, const std::vector<uint8_t> &c
     return false;
 }
 
-static bool parse_file_metadata_from_footer(std::ifstream &in, uint64_t &file_size, FileMetaData &meta, std::string &err)
+static bool parse_file_metadata_from_footer(std::ifstream &in, uint64_t &file_size, FileMetaData &meta,
+                                            std::string &err)
 {
     in.clear();
     in.seekg(0, std::ios::end);
@@ -4181,4 +4184,3 @@ static bool emit_text_values(int32_t encoding, const uint8_t *value_data, std::s
 }
 } // namespace pq
 } // namespace
-
