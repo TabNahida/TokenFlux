@@ -7,7 +7,9 @@
 #include <utility>
 #include <vector>
 
-namespace tokenflux::tokenize
+namespace tokenflux
+{
+namespace tokenize
 {
 
 struct Args
@@ -127,4 +129,5 @@ std::vector<std::string> split_codepoints_utf8(const std::string &text);
 std::string json_escape(const std::string &s);
 std::string read_file_all(const std::string &path);
 
-} // namespace tokenflux::tokenize
+} // namespace tokenize
+} // namespace tokenflux

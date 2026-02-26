@@ -7,7 +7,9 @@
 #include <unordered_map>
 #include <vector>
 
-namespace tokenflux::tokenize
+namespace tokenflux
+{
+namespace tokenize
 {
 
 class TokenizerEncoder
@@ -55,4 +57,5 @@ class TokenizerEncoder
     std::array<std::string, 256> byte_to_unicode_{};
 };
 
-} // namespace tokenflux::tokenize
+} // namespace tokenize
+} // namespace tokenflux
