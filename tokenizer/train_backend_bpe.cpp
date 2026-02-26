@@ -3,7 +3,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "tokenflux_bpe.hpp"
 #include "tokenflux_lib.hpp"
 #include "train_backend_common.hpp"
 
@@ -39,7 +38,7 @@ bool train_backend_bpe(const Config &cfg, const GlobalCountMap &global_counts, T
         }
     }
 
-    auto words = build_words_from_tokens(global_counts, cp_to_id, cfg.min_freq);
+    auto words = build_words(global_counts, cp_to_id, cfg.min_freq);
     std::size_t target_vocab = calc_pair_target_vocab(cfg, id_to_symbol.size(), specials.size());
     std::vector<std::string> merges;
     merges.reserve(target_vocab > id_to_symbol.size() ? (target_vocab - id_to_symbol.size()) : 0);

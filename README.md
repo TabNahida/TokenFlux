@@ -165,10 +165,14 @@ Behavior notes:
 ## Project Structure
 
 - `tokenizer/TokenFluxTrain.cpp`: unified train entry.
-- `tokenizer/TokenFluxTokenize.cpp`: unified tokenize entry.
+- `tokenizer/TokenFluxTokenize.cpp`: tokenize CLI entry.
+- `tokenizer/tokenize_common.*`: tokenize shared args/types/helpers.
+- `tokenizer/tokenize_tokenizer.*`: tokenizer.json parsing + runtime encoder.
+- `tokenizer/tokenize_pipeline.*`: shard writing, resume state, and tokenize pipeline.
 - `tokenizer/train_frontend.*`: CLI/env parsing for training.
 - `tokenizer/train_io.*`: chunked concurrent reading/writing + progress.
 - `tokenizer/train_backend_*.cpp`: per-backend training implementations.
+- `tokenizer/train_backend_common.*`: shared training helpers, including BPE pair-merge training.
 - `tokenizer/trainers.*`: backend dispatch + tokenizer export.
 
 ## Notes

@@ -10,7 +10,6 @@ target("TokenFluxTrain")
     set_kind("binary")
     add_files(
         "tokenizer/TokenFluxTrain.cpp",
-        "tokenizer/tokenflux_bpe.cpp",
         "tokenizer/tokenflux_lib.cpp",
         "tokenizer/train_frontend.cpp",
         "tokenizer/train_io.cpp",
@@ -28,6 +27,9 @@ target("TokenFluxTokenize")
     set_kind("binary")
     add_files(
         "tokenizer/TokenFluxTokenize.cpp",
+        "tokenizer/tokenize_common.cpp",
+        "tokenizer/tokenize_tokenizer.cpp",
+        "tokenizer/tokenize_pipeline.cpp",
         "tokenizer/tokenflux_lib.cpp"
     )
     set_rundir("$(projectdir)")

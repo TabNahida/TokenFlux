@@ -3,7 +3,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "tokenflux_bpe.hpp"
 #include "tokenflux_lib.hpp"
 #include "train_backend_common.hpp"
 
