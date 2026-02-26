@@ -154,8 +154,13 @@ xmake run TokenFluxTokenize \
 Output layout:
 
 - `out-dir/shards/train_XXXXXX.bin`
-- `out-dir/cache/parts/part_XXXXXX.bin`
+- `out-dir/cache/completed.list`
 - `out-dir/meta.json`
+
+Behavior notes:
+
+- Token output is written directly to `shards/` during tokenization (no duplicated part binaries).
+- `--resume` reuses `cache/completed.list` to skip completed source files.
 
 ## Project Structure
 

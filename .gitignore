@@ -3,6 +3,7 @@
 /build
 /.cache
 /artifacts
+/data
 **/__pycache__
 .env
 RELEASE_NOTES.md
