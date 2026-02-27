@@ -6,11 +6,6 @@ set_languages("c++23")
 
 add_requires("zlib", "xz")
 
-option("python_binding")
-    set_default(true)
-    set_showmenu(true)
-    set_description("Build Python bindings with pybind11")
-
 local function detect_python_binding()
     local localappdata = os.getenv("LOCALAPPDATA")
     if not localappdata then
@@ -46,6 +41,32 @@ local function detect_python_binding()
         pybind11_include = pybind11_include or ""
     }
 end
+
+local python_binding_config = nil
+
+option("python_binding")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Build Python bindings with pybind11")
+    on_check(function (option)
+        if not option:enabled() then
+            python_binding_config = nil
+            return
+        end
+
+        local python = detect_python_binding()
+        if not python then
+            raise("failed to detect Python build settings for tokenflux_cpp")
+        end
+        if python.include_dir == "" or python.lib_dir == "" or python.lib_name == "" then
+            raise("incomplete Python build settings for tokenflux_cpp")
+        end
+        if python.pybind11_include == "" then
+            raise("pybind11 headers were not found; set PYBIND11_INCLUDE_DIR if needed")
+        end
+        python_binding_config = python
+    end)
+option_end()
 
 target("TokenFluxTrain")
     set_kind("binary")
@@ -85,46 +106,42 @@ target("TokenFluxTokenize")
         add_syslinks("winhttp")
     end
 
-if has_config("python_binding") then
-    target("tokenflux_cpp")
-        set_kind("shared")
-        set_basename("tokenflux_cpp")
-        set_prefixname("")
-        set_extension(".pyd")
-        add_files(
-            "tokenizer/input_source.cpp",
-            "tokenizer/tokenflux_lib.cpp",
-            "tokenizer/train_frontend.cpp",
-            "tokenizer/train_io.cpp",
-            "tokenizer/train_pipeline.cpp",
-            "tokenizer/trainers.cpp",
-            "tokenizer/train_backend_common.cpp",
-            "tokenizer/train_backend_byte_bpe.cpp",
-            "tokenizer/train_backend_bpe.cpp",
-            "tokenizer/train_backend_wordpiece.cpp",
-            "tokenizer/train_backend_unigram.cpp",
-            "tokenizer/tokenize_common.cpp",
-            "tokenizer/tokenize_tokenizer.cpp",
-            "tokenizer/tokenize_pipeline.cpp",
-            "tokenizer/tokenflux_pybind.cpp"
-        )
-        add_packages("zlib", "xz")
-        if is_plat("windows") then
-            add_syslinks("winhttp")
+target("tokenflux_cpp")
+    set_kind("shared")
+    set_basename("tokenflux_cpp")
+    set_prefixname("")
+    set_extension(".pyd")
+    add_options("python_binding")
+    add_files(
+        "tokenizer/input_source.cpp",
+        "tokenizer/tokenflux_lib.cpp",
+        "tokenizer/train_frontend.cpp",
+        "tokenizer/train_io.cpp",
+        "tokenizer/train_pipeline.cpp",
+        "tokenizer/trainers.cpp",
+        "tokenizer/train_backend_common.cpp",
+        "tokenizer/train_backend_byte_bpe.cpp",
+        "tokenizer/train_backend_bpe.cpp",
+        "tokenizer/train_backend_wordpiece.cpp",
+        "tokenizer/train_backend_unigram.cpp",
+        "tokenizer/tokenize_common.cpp",
+        "tokenizer/tokenize_tokenizer.cpp",
+        "tokenizer/tokenize_pipeline.cpp",
+        "tokenizer/tokenflux_pybind.cpp"
+    )
+    add_packages("zlib", "xz")
+    if is_plat("windows") then
+        add_syslinks("winhttp")
+    end
+    on_load(function (target)
+        if not get_config("python_binding") then
+            target:set("enabled", false)
+            return
         end
-        on_load(function (target)
-            local python = detect_python_binding()
-            if not python then
-                raise("failed to detect Python build settings for tokenflux_cpp")
-            end
-            if python.include_dir == "" or python.lib_dir == "" or python.lib_name == "" then
-                raise("incomplete Python build settings for tokenflux_cpp")
-            end
-            if python.pybind11_include == "" then
-                raise("pybind11 headers were not found; set PYBIND11_INCLUDE_DIR if needed")
-            end
-            target:add("includedirs", python.include_dir, python.pybind11_include)
-            target:add("linkdirs", python.lib_dir)
-            target:add("links", python.lib_name)
-        end)
-end
+
+        target:set("enabled", true)
+        local python = python_binding_config or detect_python_binding()
+        target:add("includedirs", python.include_dir, python.pybind11_include)
+        target:add("linkdirs", python.lib_dir)
+        target:add("links", python.lib_name)
+    end)

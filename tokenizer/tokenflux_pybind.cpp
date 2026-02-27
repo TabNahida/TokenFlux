@@ -1,5 +1,4 @@
 #include <stdexcept>
-#include <string>
 #include <utility>
 
 #include <pybind11/pybind11.h>

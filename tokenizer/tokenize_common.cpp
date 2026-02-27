@@ -1,7 +1,6 @@
 #include "tokenize_common.hpp"
 
 #include "input_source.hpp"
-#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -49,7 +48,8 @@ void print_usage()
               << "  --eos-token <tok>            EOS token (default: </s>)\n"
               << "  --bos-token <tok>            BOS token (default: none)\n"
               << "  --threads <n>                Worker threads (0=auto)\n"
-              << "  --cache-max-entries <n>      Max in-memory token-piece cache entries per worker (default: 50000, 0=disable)\n"
+              << "  --cache-max-entries <n>      Max in-memory token-piece cache entries per worker (default: 50000, "
+                 "0=disable)\n"
               << "  --max-memory-mb <n>          Soft memory cap for per-file processing (default: 0=unlimited)\n"
               << "  --prescan / --no-prescan     Optional pre-scan docs for stable ETA/docs total (default: off)\n"
               << "  --resume / --no-resume       Reuse completed-file list for resume (default: on)\n"
