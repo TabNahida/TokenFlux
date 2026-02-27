@@ -1,4 +1,4 @@
-# TokenFlux
+# TokenFlux++
 
 TokenFlux is a high-performance C++ toolkit for tokenizer training and dataset pre-tokenization.
 
