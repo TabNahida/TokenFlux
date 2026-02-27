@@ -17,6 +17,7 @@ struct Args
     std::string env_file = ".env";
     std::string data_glob;
     std::string data_list;
+    std::vector<std::string> input_entries;
     std::string text_field = "text";
     std::string tokenizer_path = "tokenizer.json";
     std::string out_dir = "data/tokens";
@@ -25,7 +26,7 @@ struct Args
     std::size_t min_chars = 1;
     std::size_t max_chars = 20'000;
     std::uint64_t max_docs = 0;
-    std::string eos_token = "</s>";
+    std::string eos_token = "<|endoftext|>";
     std::string bos_token;
     std::uint64_t progress_every = 10'000;
     std::size_t threads = 0;

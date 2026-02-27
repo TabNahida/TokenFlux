@@ -2,7 +2,7 @@
 
 TokenFlux is a high-performance C++ toolkit for tokenizer training and dataset pre-tokenization.
 
-Latest release: **0.3.1**. See [RELEASE](https://github.com/TabNahida/TokenFlux/releases).
+Latest release: **0.3.2**. See [RELEASE](https://github.com/TabNahida/TokenFlux/releases).
 
 ## Binaries
 
@@ -20,6 +20,7 @@ Python binding build output:
 - `build/windows/x64/release/tokenflux_cpp.pyd`
 
 The binding exposes `TrainConfig`, `TokenizeArgs`, `train(...)`, and `tokenize(...)`.
+It also exposes a runtime `Tokenizer` class that can load `tokenizer.json`, encode directly in Python, and return Torch tensors.
 
 ## Supported Training Backends
 
@@ -46,6 +47,7 @@ Key options:
 
 - `--trainer {byte_bpe|bpe|wordpiece|unigram}`
 - `--data-list` to read local paths, `file://...`, or `http(s)://...` entries from a local/remote list
+- Default GPT-style special token set is now `<|endoftext|>`
 - `--records-per-chunk` as the upper bound for per-task document batching
 - `--threads` for multi-thread chunk processing
 - `--chunk-dir` for resumable count chunks
@@ -181,16 +183,19 @@ sys.path.insert(0, r"build\windows\x64\release")
 import tokenflux_cpp as tf
 
 cfg = tf.TrainConfig()
-cfg.data_list = r"artifacts\smoke\inputs.list"
 cfg.trainer = tf.TrainerKind.bpe
 cfg.vocab_size = 32000
-tf.train(cfg)
+tf.train(cfg, [r"data\train_000.jsonl", r"data\train_001.jsonl"])
 
 args = tf.TokenizeArgs()
-args.data_list = r"artifacts\smoke\inputs.list"
 args.tokenizer_path = r"tokenizer.json"
 args.out_dir = r"data\tokens"
-tf.tokenize(args)
+tf.tokenize(args, [r"data\train_000.jsonl", r"data\train_001.jsonl"])
+
+tok = tf.Tokenizer(r"tokenizer.json")
+ids = tok.encode("hello world")
+batch = tok.encode_batch_to_torch(["hello world", "token flux"], pad_id=0)
+streamed = tok.tokenize_inputs_to_torch([r"data\train_000.jsonl"], text_field="text")
 ```
 
 ## Project Structure

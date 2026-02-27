@@ -1,5 +1,5 @@
 set_project("TokenFlux")
-set_version("0.3.1")
+set_version("0.3.2")
 
 add_rules("mode.debug", "mode.release")
 set_languages("c++23")

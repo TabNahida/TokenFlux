@@ -45,7 +45,7 @@ void print_usage()
               << "  --min-chars <n>              Min chars per doc (default: 1)\n"
               << "  --max-chars <n>              Max chars per doc (default: 20000)\n"
               << "  --max-docs <n>               CLI compatibility only (must be 0)\n"
-              << "  --eos-token <tok>            EOS token (default: </s>)\n"
+              << "  --eos-token <tok>            EOS token (default: <|endoftext|>)\n"
               << "  --bos-token <tok>            BOS token (default: none)\n"
               << "  --threads <n>                Worker threads (0=auto)\n"
               << "  --cache-max-entries <n>      Max in-memory token-piece cache entries per worker (default: 50000, "

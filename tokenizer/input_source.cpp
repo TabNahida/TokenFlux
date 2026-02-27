@@ -356,7 +356,7 @@ bool download_http_to_bytes(const std::string &url, std::vector<std::uint8_t> &b
         client.set_read_timeout(300);
         client.set_write_timeout(30);
 
-        httplib::Headers headers = {{"User-Agent", "TokenFlux/0.3.1"}};
+        httplib::Headers headers = {{"User-Agent", "TokenFlux/0.3.2"}};
         auto res = client.Get(parsed.target.c_str(), headers);
         if (!res)
         {
@@ -499,13 +499,18 @@ std::string normalize_input_id(const std::string &value)
     return out;
 }
 
-bool resolve_input_sources(const std::string &data_glob, const std::string &data_list,
+bool resolve_input_sources(const std::vector<std::string> &input_entries, const std::string &data_glob,
+                           const std::string &data_list,
                            const std::string &remote_cache_dir, std::vector<InputSource> &sources, std::string &err)
 {
     sources.clear();
 
     std::vector<std::string> entries;
-    if (!data_list.empty())
+    if (!input_entries.empty())
+    {
+        entries = input_entries;
+    }
+    else if (!data_list.empty())
     {
         std::string payload;
         if (!read_uri_text(data_list, payload, err))
@@ -536,11 +541,16 @@ bool resolve_input_sources(const std::string &data_glob, const std::string &data
 
     if (entries.empty())
     {
+        if (!input_entries.empty())
+        {
+            err = "no inputs found from Python input entries";
+        }
+        else
         if (!data_list.empty())
         {
             err = "no inputs found from data list: " + data_list;
         }
-        return !data_list.empty() ? false : true;
+        return !input_entries.empty() || !data_list.empty() ? false : true;
     }
 
     std::vector<std::string> seen;

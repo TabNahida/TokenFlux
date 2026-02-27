@@ -1177,7 +1177,7 @@ int run_tokenize(const Args &args)
             data_list = it->second;
         }
     }
-    if (data_glob.empty() && data_list.empty())
+    if (args.input_entries.empty() && data_glob.empty() && data_list.empty())
     {
         std::cerr << "DATA_PATH / DATA_LIST is missing. Set it in .env or pass --data-glob/--data-list.\n";
         return 1;
@@ -1246,7 +1246,7 @@ int run_tokenize(const Args &args)
     }
 
     std::vector<InputSource> input_sources;
-    if (!resolve_input_sources(data_glob, data_list, remote_cache_dir.string(), input_sources, err))
+    if (!resolve_input_sources(args.input_entries, data_glob, data_list, remote_cache_dir.string(), input_sources, err))
     {
         std::cerr << err << "\n";
         return 1;
@@ -1356,7 +1356,8 @@ int run_tokenize(const Args &args)
     std::cerr << "Shard dir: " << shard_dir.string() << "\n";
     std::cerr << "Completed list: " << completed_list_path.string() << "\n";
     std::cerr << "Resume completed files: " << completion_records.size() << "\n";
-    std::cerr << "Input mode: " << (data_list.empty() ? "glob" : "list") << "\n";
+    std::string input_mode = !args.input_entries.empty() ? "python-list" : (data_list.empty() ? "glob" : "list");
+    std::cerr << "Input mode: " << input_mode << "\n";
 
     auto start_time = std::chrono::steady_clock::now();
     std::vector<PartResult> results(tasks.size());

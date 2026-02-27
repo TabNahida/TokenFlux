@@ -17,12 +17,13 @@ struct Config
     std::string env_path = ".env";
     std::string data_glob;
     std::string data_list;
+    std::vector<std::string> input_entries;
     std::string text_field = "text";
     std::string output_json = "tokenizer.json";
     std::string output_vocab = "vocab.json";
     std::string output_merges = "merges.txt";
-    std::string unk_token = "<unk>";
-    std::vector<std::string> special_tokens = {"<s>", "</s>", "<pad>", "<unk>", "<mask>"};
+    std::string unk_token = "<|endoftext|>";
+    std::vector<std::string> special_tokens = {"<|endoftext|>"};
     TrainerKind trainer = TrainerKind::byte_bpe;
 
     std::size_t vocab_size = 50000;

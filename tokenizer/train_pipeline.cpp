@@ -59,7 +59,7 @@ void derive_pair_cap(Config &cfg)
 
 int run_train(Config cfg)
 {
-    if (cfg.data_glob.empty() && cfg.data_list.empty())
+    if (cfg.input_entries.empty() && cfg.data_glob.empty() && cfg.data_list.empty())
     {
         std::cerr << "DATA_PATH / DATA_LIST not set and no input was provided.\n";
         return 1;
@@ -68,7 +68,7 @@ int run_train(Config cfg)
     std::vector<InputSource> sources;
     std::string err;
     std::string remote_cache_dir = (std::filesystem::path(cfg.chunk_dir) / "remote_inputs").string();
-    if (!resolve_input_sources(cfg.data_glob, cfg.data_list, remote_cache_dir, sources, err))
+    if (!resolve_input_sources(cfg.input_entries, cfg.data_glob, cfg.data_list, remote_cache_dir, sources, err))
     {
         std::cerr << err << "\n";
         return 1;
@@ -112,7 +112,8 @@ int run_train(Config cfg)
     std::cerr << "Threads: " << cfg.threads << "\n";
     std::cerr << "Records/chunk: " << cfg.records_per_chunk << "\n";
     std::cerr << "Chunk dir: " << cfg.chunk_dir << "\n";
-    std::cerr << "Input mode: " << (cfg.data_list.empty() ? "glob" : "list") << "\n";
+    std::string input_mode = !cfg.input_entries.empty() ? "python-list" : (cfg.data_list.empty() ? "glob" : "list");
+    std::cerr << "Input mode: " << input_mode << "\n";
     std::cerr << "Streaming prescan: " << (cfg.prescan_records ? "on" : "off") << "\n";
     if (local_entry_cap > 0)
     {

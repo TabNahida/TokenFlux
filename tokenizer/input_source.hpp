@@ -18,5 +18,6 @@ bool is_remote_http_url(const std::string &value);
 bool is_file_url(const std::string &value);
 std::string normalize_input_id(const std::string &value);
 
-bool resolve_input_sources(const std::string &data_glob, const std::string &data_list,
+bool resolve_input_sources(const std::vector<std::string> &input_entries, const std::string &data_glob,
+                           const std::string &data_list,
                            const std::string &remote_cache_dir, std::vector<InputSource> &sources, std::string &err);
