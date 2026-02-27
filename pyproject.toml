@@ -1,0 +1,40 @@
+[build-system]
+requires = [
+    "setuptools>=69",
+    "wheel",
+    "pybind11>=2.12",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tokenflux"
+version = "0.3.2"
+description = "High-performance C++ toolkit for tokenizer training and dataset pre-tokenization."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "TabNahida" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: C++",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/TabNahida/TokenFlux"
+Repository = "https://github.com/TabNahida/TokenFlux"
+Issues = "https://github.com/TabNahida/TokenFlux/issues"
+
+[tool.setuptools]
+packages = ["tokenflux"]
+include-package-data = true

@@ -155,12 +155,11 @@ std::string remote_extension_from_url(const std::string &value)
         return ".bin";
     }
     static const std::vector<std::string> known_exts = {".jsonl.gz", ".json.gz", ".jsonl.xz", ".json.xz", ".jsonl",
-                                                        ".json",    ".ndjson",  ".parquet",  ".gz",       ".xz"};
+                                                        ".json",     ".ndjson",  ".parquet",  ".gz",      ".xz"};
     std::string lower_leaf = lower_ascii(leaf);
     for (const auto &ext : known_exts)
     {
-        if (lower_leaf.size() >= ext.size() &&
-            lower_leaf.compare(lower_leaf.size() - ext.size(), ext.size(), ext) == 0)
+        if (lower_leaf.size() >= ext.size() && lower_leaf.compare(lower_leaf.size() - ext.size(), ext.size(), ext) == 0)
         {
             return ext;
         }
@@ -281,7 +280,8 @@ bool parse_http_url(const std::string &url, ParsedHttpUrl &parsed)
 
     std::size_t host_start = scheme_len;
     std::size_t path_start = url.find_first_of("/?#", host_start);
-    std::string authority = path_start == std::string::npos ? url.substr(host_start) : url.substr(host_start, path_start - host_start);
+    std::string authority =
+        path_start == std::string::npos ? url.substr(host_start) : url.substr(host_start, path_start - host_start);
     if (authority.empty())
     {
         return false;
@@ -407,7 +407,8 @@ bool read_uri_text(const std::string &uri, std::string &payload, std::string &er
     return static_cast<bool>(in) || in.eof();
 }
 
-bool materialize_remote_input(const std::string &url, const std::string &remote_cache_dir, InputSource &source, std::string &err)
+bool materialize_remote_input(const std::string &url, const std::string &remote_cache_dir, InputSource &source,
+                              std::string &err)
 {
     std::error_code ec;
     std::filesystem::create_directories(remote_cache_dir, ec);
@@ -500,8 +501,8 @@ std::string normalize_input_id(const std::string &value)
 }
 
 bool resolve_input_sources(const std::vector<std::string> &input_entries, const std::string &data_glob,
-                           const std::string &data_list,
-                           const std::string &remote_cache_dir, std::vector<InputSource> &sources, std::string &err)
+                           const std::string &data_list, const std::string &remote_cache_dir,
+                           std::vector<InputSource> &sources, std::string &err)
 {
     sources.clear();
 
@@ -545,8 +546,7 @@ bool resolve_input_sources(const std::vector<std::string> &input_entries, const 
         {
             err = "no inputs found from Python input entries";
         }
-        else
-        if (!data_list.empty())
+        else if (!data_list.empty())
         {
             err = "no inputs found from data list: " + data_list;
         }

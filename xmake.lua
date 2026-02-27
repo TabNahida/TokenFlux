@@ -7,7 +7,33 @@ set_languages("c++23")
 add_requires("zlib", "xz")
 add_requires("cpp-httplib", {configs = {ssl = true}})
 
+local function normalize_python_lib_name(name)
+    if not name or name == "" then
+        return ""
+    end
+    local cleaned = name
+    cleaned = cleaned:gsub("%.lib$", "")
+    cleaned = cleaned:gsub("%.dll$", "")
+    cleaned = cleaned:gsub("%.so$", "")
+    cleaned = cleaned:gsub("%.dylib$", "")
+    cleaned = cleaned:gsub("^lib", "")
+    return cleaned
+end
+
 local function detect_python_binding()
+    local env_include_dir = os.getenv("PYTHON_INCLUDE_DIR") or ""
+    local env_lib_dir = os.getenv("PYTHON_LIB_DIR") or ""
+    local env_lib_name = normalize_python_lib_name(os.getenv("PYTHON_LIB_NAME") or "")
+    local env_pybind11_include = os.getenv("PYBIND11_INCLUDE_DIR") or ""
+    if env_include_dir ~= "" and env_lib_dir ~= "" and env_lib_name ~= "" then
+        return {
+            include_dir = env_include_dir,
+            lib_dir = env_lib_dir,
+            lib_name = env_lib_name,
+            pybind11_include = env_pybind11_include
+        }
+    end
+
     local localappdata = os.getenv("LOCALAPPDATA")
     if not localappdata then
         return nil

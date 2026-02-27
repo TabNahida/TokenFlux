@@ -15,6 +15,20 @@ Build:
 xmake
 ```
 
+Install from source with pip:
+
+```bash
+pip install .
+```
+
+Editable install for local development:
+
+```bash
+pip install -e .
+```
+
+`pip` packaging delegates native compilation to `xmake`, so a working `xmake` + C++ toolchain is still required.
+
 Python binding build output:
 
 - `build/windows/x64/release/tokenflux_cpp.pyd`
@@ -177,10 +191,7 @@ Behavior notes:
 ### Python Binding Example
 
 ```python
-import sys
-
-sys.path.insert(0, r"build\windows\x64\release")
-import tokenflux_cpp as tf
+import tokenflux as tf
 
 cfg = tf.TrainConfig()
 cfg.trainer = tf.TrainerKind.bpe

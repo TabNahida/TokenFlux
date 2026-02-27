@@ -3,6 +3,9 @@
 /build
 /.cache
 /artifacts
+/dist
+/*.egg-info
+/tokenflux_cpp*.pyd
 /data
 **/__pycache__
 .env
