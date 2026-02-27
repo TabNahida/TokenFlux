@@ -6,92 +6,20 @@ set_languages("c++23")
 
 add_requires("zlib", "xz")
 add_requires("cpp-httplib", {configs = {ssl = true}})
+add_requires("python 3.x", {alias = "python", optional = true})
+add_requires("pybind11", {optional = true})
 
-local function normalize_python_lib_name(name)
-    if not name or name == "" then
-        return ""
-    end
-    local cleaned = name
-    cleaned = cleaned:gsub("%.lib$", "")
-    cleaned = cleaned:gsub("%.dll$", "")
-    cleaned = cleaned:gsub("%.so$", "")
-    cleaned = cleaned:gsub("%.dylib$", "")
-    cleaned = cleaned:gsub("^lib", "")
-    return cleaned
-end
-
-local function detect_python_binding()
-    local env_include_dir = os.getenv("PYTHON_INCLUDE_DIR") or ""
-    local env_lib_dir = os.getenv("PYTHON_LIB_DIR") or ""
-    local env_lib_name = normalize_python_lib_name(os.getenv("PYTHON_LIB_NAME") or "")
-    local env_pybind11_include = os.getenv("PYBIND11_INCLUDE_DIR") or ""
-    if env_include_dir ~= "" and env_lib_dir ~= "" and env_lib_name ~= "" then
-        return {
-            include_dir = env_include_dir,
-            lib_dir = env_lib_dir,
-            lib_name = env_lib_name,
-            pybind11_include = env_pybind11_include
-        }
-    end
-
-    local localappdata = os.getenv("LOCALAPPDATA")
-    if not localappdata then
-        return nil
-    end
-    local python_roots = os.dirs(path.join(localappdata, "Programs", "Python", "Python*"))
-    if not python_roots or #python_roots == 0 then
-        return nil
-    end
-    table.sort(python_roots)
-    local python_root = python_roots[#python_roots]
-    local version_text = path.basename(python_root):match("^Python(%d+)$")
-    if not version_text then
-        return nil
-    end
-
-    local pybind11_include = os.getenv("PYBIND11_INCLUDE_DIR")
-    if not pybind11_include or pybind11_include == "" then
-        local userprofile = os.getenv("USERPROFILE")
-        if userprofile then
-            local torch_includes = os.dirs(path.join(userprofile, ".conda", "envs", "*", "Lib", "site-packages", "torch", "include"))
-            if torch_includes and #torch_includes > 0 then
-                table.sort(torch_includes)
-                pybind11_include = torch_includes[#torch_includes]
-            end
-        end
-    end
-
-    return {
-        include_dir = path.join(python_root, "Include"),
-        lib_dir = path.join(python_root, "libs"),
-        lib_name = "python" .. version_text,
-        pybind11_include = pybind11_include or ""
-    }
-end
-
-local python_binding_config = nil
-
-option("python_binding")
+option("pybind")
     set_default(false)
     set_showmenu(true)
     set_description("Build Python bindings with pybind11")
     on_check(function (option)
         if not option:enabled() then
-            python_binding_config = nil
             return
         end
-
-        local python = detect_python_binding()
-        if not python then
-            raise("failed to detect Python build settings for tokenflux_cpp")
+        if not has_package("python") or not has_package("pybind11") then
+            raise("option `pybind` requires packages `python 3.x` and `pybind11`")
         end
-        if python.include_dir == "" or python.lib_dir == "" or python.lib_name == "" then
-            raise("incomplete Python build settings for tokenflux_cpp")
-        end
-        if python.pybind11_include == "" then
-            raise("pybind11 headers were not found; set PYBIND11_INCLUDE_DIR if needed")
-        end
-        python_binding_config = python
     end)
 option_end()
 
@@ -129,10 +57,9 @@ target("TokenFluxTokenize")
 
 target("tokenflux_cpp")
     set_kind("shared")
+    add_rules("python.module")
     set_basename("tokenflux_cpp")
-    set_prefixname("")
-    set_extension(".pyd")
-    add_options("python_binding")
+    add_options("pybind")
     add_files(
         "tokenizer/input_source.cpp",
         "tokenizer/tokenflux_lib.cpp",
@@ -152,14 +79,11 @@ target("tokenflux_cpp")
     )
     add_packages("zlib", "xz", "cpp-httplib")
     on_load(function (target)
-        if not get_config("python_binding") then
+        if not get_config("pybind") then
             target:set("enabled", false)
             return
         end
 
         target:set("enabled", true)
-        local python = python_binding_config or detect_python_binding()
-        target:add("includedirs", python.include_dir, python.pybind11_include)
-        target:add("linkdirs", python.lib_dir)
-        target:add("links", python.lib_name)
+        target:add("packages", "python", "pybind11")
     end)
