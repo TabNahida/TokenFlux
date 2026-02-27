@@ -41,7 +41,7 @@ jobs:
       - name: Build CLI targets
         run: |
           xmake f -y -m release
-          xmake build -y TokenFluxTrain TokenFluxTokenize
+          xmake b -y
 
       - name: Pack CLI archive
         shell: bash
@@ -101,7 +101,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-latest, macos-13]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
