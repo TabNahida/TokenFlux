@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (example: v0.3.2)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build-cli:
+    name: Build CLI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Build CLI targets
+        run: |
+          xmake f -y -m release
+          xmake build -y TokenFluxTrain TokenFluxTokenize
+
+      - name: Pack CLI archive
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          root = Path(".").resolve()
+          build = root / "build"
+          dist = root / "dist"
+          stage = dist / "cli"
+          stage.mkdir(parents=True, exist_ok=True)
+
+          def pick_binary(base: str) -> Path:
+              candidates = []
+              for path in build.rglob(f"{base}*"):
+                  if not path.is_file():
+                      continue
+                  if ".objs" in path.parts or ".deps" in path.parts:
+                      continue
+                  if path.name not in {base, f"{base}.exe"}:
+                      continue
+                  candidates.append(path)
+              if not candidates:
+                  raise SystemExit(f"Cannot find built artifact for {base}")
+              return max(candidates, key=lambda item: item.stat().st_mtime)
+
+          for name in ("TokenFluxTrain", "TokenFluxTokenize"):
+              src = pick_binary(name)
+              shutil.copy2(src, stage / src.name)
+
+          tag = os.environ["RELEASE_TAG"]
+          runner_os = os.environ["RUNNER_OS"].lower()
+          runner_arch = os.environ["RUNNER_ARCH"].lower()
+          archive = dist / f"tokenflux-cli-{tag}-{runner_os}-{runner_arch}.zip"
+
+          with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+              for file in sorted(stage.iterdir()):
+                  zf.write(file, arcname=file.name)
+
+          print(f"Created {archive}")
+          PY
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.os }}
+          path: dist/tokenflux-cli-*.zip
+          if-no-files-found: error
+
+  build-wheels:
+    name: Build Wheel (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-13]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade build pybind11
+
+      - name: Build wheel
+        env:
+          XMAKE_GLOBALDIR: ${{ github.workspace }}/.xmake-global
+        run: |
+          python -m build --wheel --no-isolation
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-cli, build-wheels]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Show release files
+        run: |
+          find release-assets -type f | sort
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            release-assets/**/*.zip
+            release-assets/**/*.whl
