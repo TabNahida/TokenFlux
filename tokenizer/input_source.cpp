@@ -11,15 +11,20 @@
 #include <string>
 #include <vector>
 
-#include "tokenflux_lib.hpp"
+#include <httplib.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#include <winhttp.h>
-#endif
+#include "tokenflux_lib.hpp"
 
 namespace
 {
+struct ParsedHttpUrl
+{
+    bool https = false;
+    std::string host;
+    int port = 80;
+    std::string target = "/";
+};
+
 std::string trim_ascii(const std::string &value)
 {
     std::size_t start = 0;
@@ -252,145 +257,134 @@ std::string resolve_list_entry(const std::string &list_ref, bool list_is_remote,
     return (base_dir / entry).string();
 }
 
-#ifdef _WIN32
-std::wstring utf8_to_wide(const std::string &value)
+bool parse_http_url(const std::string &url, ParsedHttpUrl &parsed)
 {
-    if (value.empty())
+    parsed = {};
+    std::string lower = lower_ascii(url);
+    std::size_t scheme_len = 0;
+    if (lower.rfind("https://", 0) == 0)
     {
-        return {};
+        parsed.https = true;
+        parsed.port = 443;
+        scheme_len = 8;
     }
-    int needed = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), nullptr, 0);
-    if (needed <= 0)
+    else if (lower.rfind("http://", 0) == 0)
     {
-        return {};
+        parsed.https = false;
+        parsed.port = 80;
+        scheme_len = 7;
     }
-    std::wstring out(static_cast<std::size_t>(needed), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), out.data(), needed);
-    return out;
+    else
+    {
+        return false;
+    }
+
+    std::size_t host_start = scheme_len;
+    std::size_t path_start = url.find_first_of("/?#", host_start);
+    std::string authority = path_start == std::string::npos ? url.substr(host_start) : url.substr(host_start, path_start - host_start);
+    if (authority.empty())
+    {
+        return false;
+    }
+    if (authority.front() == '[')
+    {
+        std::size_t end = authority.find(']');
+        if (end == std::string::npos)
+        {
+            return false;
+        }
+        parsed.host = authority.substr(1, end - 1);
+        if (end + 1 < authority.size())
+        {
+            if (authority[end + 1] != ':')
+            {
+                return false;
+            }
+            try
+            {
+                parsed.port = std::stoi(authority.substr(end + 2));
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+    }
+    else
+    {
+        std::size_t colon = authority.rfind(':');
+        if (colon != std::string::npos && authority.find(':') == colon)
+        {
+            parsed.host = authority.substr(0, colon);
+            try
+            {
+                parsed.port = std::stoi(authority.substr(colon + 1));
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            parsed.host = authority;
+        }
+    }
+    if (parsed.host.empty())
+    {
+        return false;
+    }
+    parsed.target = path_start == std::string::npos ? "/" : url.substr(path_start);
+    return true;
 }
 
 bool download_http_to_bytes(const std::string &url, std::vector<std::uint8_t> &bytes, std::string &err)
 {
     bytes.clear();
 
-    std::wstring wide_url = utf8_to_wide(url);
-    if (wide_url.empty())
-    {
-        err = "failed to convert URL to wide string: " + url;
-        return false;
-    }
-
-    URL_COMPONENTS parts{};
-    parts.dwStructSize = sizeof(parts);
-    parts.dwSchemeLength = static_cast<DWORD>(-1);
-    parts.dwHostNameLength = static_cast<DWORD>(-1);
-    parts.dwUrlPathLength = static_cast<DWORD>(-1);
-    parts.dwExtraInfoLength = static_cast<DWORD>(-1);
-    if (!WinHttpCrackUrl(wide_url.c_str(), static_cast<DWORD>(wide_url.size()), 0, &parts))
+    ParsedHttpUrl parsed;
+    if (!parse_http_url(url, parsed))
     {
         err = "failed to parse URL: " + url;
         return false;
     }
 
-    std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
-    std::wstring path(parts.lpszUrlPath, parts.dwUrlPathLength);
-    if (parts.dwExtraInfoLength > 0 && parts.lpszExtraInfo)
-    {
-        path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
-    }
-    if (path.empty())
-    {
-        path = L"/";
-    }
+    auto fetch_with_client = [&](auto &client) -> bool {
+        client.set_follow_location(true);
+        client.set_keep_alive(false);
+        client.set_connection_timeout(30);
+        client.set_read_timeout(300);
+        client.set_write_timeout(30);
 
-    HINTERNET session = WinHttpOpen(L"TokenFlux/0.3.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
-                                    WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session)
-    {
-        err = "WinHttpOpen failed";
-        return false;
-    }
-
-    HINTERNET connect = WinHttpConnect(session, host.c_str(), parts.nPort, 0);
-    if (!connect)
-    {
-        WinHttpCloseHandle(session);
-        err = "WinHttpConnect failed";
-        return false;
-    }
-
-    DWORD flags = parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET request = WinHttpOpenRequest(connect, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                                           WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!request)
-    {
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        err = "WinHttpOpenRequest failed";
-        return false;
-    }
-
-    bool ok = false;
-    if (WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-        WinHttpReceiveResponse(request, nullptr))
-    {
-        DWORD status = 0;
-        DWORD status_size = sizeof(status);
-        if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
-                                 &status, &status_size, WINHTTP_NO_HEADER_INDEX))
+        httplib::Headers headers = {{"User-Agent", "TokenFlux/0.3.1"}};
+        auto res = client.Get(parsed.target.c_str(), headers);
+        if (!res)
         {
-            err = "failed to query HTTP status: " + url;
+            err = "HTTP request failed: " + url + " (error=" + std::to_string(static_cast<int>(res.error())) + ")";
+            return false;
         }
-        else if (status < 200 || status >= 300)
+        if (res->status < 200 || res->status >= 300)
         {
-            err = "HTTP GET failed with status " + std::to_string(status) + ": " + url;
+            err = "HTTP GET failed with status " + std::to_string(res->status) + ": " + url;
+            return false;
         }
-        else
-        {
-            ok = true;
-            while (true)
-            {
-                DWORD available = 0;
-                if (!WinHttpQueryDataAvailable(request, &available))
-                {
-                    ok = false;
-                    err = "WinHttpQueryDataAvailable failed: " + url;
-                    break;
-                }
-                if (available == 0)
-                {
-                    break;
-                }
-                std::size_t offset = bytes.size();
-                bytes.resize(offset + static_cast<std::size_t>(available));
-                DWORD read = 0;
-                if (!WinHttpReadData(request, bytes.data() + offset, available, &read))
-                {
-                    ok = false;
-                    err = "WinHttpReadData failed: " + url;
-                    break;
-                }
-                bytes.resize(offset + static_cast<std::size_t>(read));
-            }
-        }
-    }
-    else
-    {
-        err = "HTTP request failed: " + url;
-    }
+        bytes.assign(res->body.begin(), res->body.end());
+        return true;
+    };
 
-    WinHttpCloseHandle(request);
-    WinHttpCloseHandle(connect);
-    WinHttpCloseHandle(session);
-    return ok;
+    if (parsed.https)
+    {
+        httplib::SSLClient client(parsed.host, parsed.port);
+        return fetch_with_client(client);
+    }
+    httplib::Client client(parsed.host, parsed.port);
+    return fetch_with_client(client);
 }
-#endif
 
 bool read_uri_text(const std::string &uri, std::string &payload, std::string &err)
 {
     if (is_remote_http_url(uri))
     {
-#ifdef _WIN32
         std::vector<std::uint8_t> bytes;
         if (!download_http_to_bytes(uri, bytes, err))
         {
@@ -398,10 +392,6 @@ bool read_uri_text(const std::string &uri, std::string &payload, std::string &er
         }
         payload.assign(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         return true;
-#else
-        err = "remote HTTP input is only implemented on Windows in this build";
-        return false;
-#endif
     }
 
     std::string path = is_file_url(uri) ? decode_file_url(uri) : uri;
@@ -419,7 +409,6 @@ bool read_uri_text(const std::string &uri, std::string &payload, std::string &er
 
 bool materialize_remote_input(const std::string &url, const std::string &remote_cache_dir, InputSource &source, std::string &err)
 {
-#ifdef _WIN32
     std::error_code ec;
     std::filesystem::create_directories(remote_cache_dir, ec);
     if (ec)
@@ -463,13 +452,6 @@ bool materialize_remote_input(const std::string &url, const std::string &remote_
         return false;
     }
     return true;
-#else
-    (void)url;
-    (void)remote_cache_dir;
-    (void)source;
-    err = "remote HTTP input is only implemented on Windows in this build";
-    return false;
-#endif
 }
 
 bool materialize_local_input(const std::string &raw_value, InputSource &source, std::string &err)

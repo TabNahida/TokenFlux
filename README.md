@@ -2,7 +2,7 @@
 
 TokenFlux is a high-performance C++ toolkit for tokenizer training and dataset pre-tokenization.
 
-Latest release: **0.3.0**. See [RELEASE](https://github.com/TabNahida/TokenFlux/releases).
+Latest release: **0.3.1**. See [RELEASE](https://github.com/TabNahida/TokenFlux/releases).
 
 ## Binaries
 
@@ -167,7 +167,7 @@ Output layout:
 Behavior notes:
 
 - Input can come from `--data-glob` or `--data-list`; list files can be local paths or remote `http(s)` URLs.
-- List entries can be local paths, `file://` URLs, or remote `http(s)` files. Remote inputs are cached in C++ before parsing.
+- List entries can be local paths, `file://` URLs, or remote `http(s)` files. Remote inputs are fetched through `cpp-httplib` and cached in C++ before parsing.
 - Token output is written directly to `shards/` during tokenization (no duplicated part binaries).
 - `--resume` reuses `cache/completed.list` to skip completed source files.
 - Default progress is file-based streaming progress; `--prescan` is optional.

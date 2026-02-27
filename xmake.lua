@@ -1,10 +1,11 @@
 set_project("TokenFlux")
-set_version("0.3.0")
+set_version("0.3.1")
 
 add_rules("mode.debug", "mode.release")
 set_languages("c++23")
 
 add_requires("zlib", "xz")
+add_requires("cpp-httplib", {configs = {ssl = true}})
 
 local function detect_python_binding()
     local localappdata = os.getenv("LOCALAPPDATA")
@@ -85,10 +86,7 @@ target("TokenFluxTrain")
         "tokenizer/train_backend_unigram.cpp"
     )
     set_rundir("$(projectdir)")
-    add_packages("zlib", "xz")
-    if is_plat("windows") then
-        add_syslinks("winhttp")
-    end
+    add_packages("zlib", "xz", "cpp-httplib")
 
 target("TokenFluxTokenize")
     set_kind("binary")
@@ -101,10 +99,7 @@ target("TokenFluxTokenize")
         "tokenizer/tokenflux_lib.cpp"
     )
     set_rundir("$(projectdir)")
-    add_packages("zlib", "xz")
-    if is_plat("windows") then
-        add_syslinks("winhttp")
-    end
+    add_packages("zlib", "xz", "cpp-httplib")
 
 target("tokenflux_cpp")
     set_kind("shared")
@@ -129,10 +124,7 @@ target("tokenflux_cpp")
         "tokenizer/tokenize_pipeline.cpp",
         "tokenizer/tokenflux_pybind.cpp"
     )
-    add_packages("zlib", "xz")
-    if is_plat("windows") then
-        add_syslinks("winhttp")
-    end
+    add_packages("zlib", "xz", "cpp-httplib")
     on_load(function (target)
         if not get_config("python_binding") then
             target:set("enabled", false)

@@ -14,7 +14,7 @@ namespace py = pybind11;
 PYBIND11_MODULE(tokenflux_cpp, m)
 {
     m.doc() = "TokenFlux C++ bindings";
-    m.attr("__version__") = "0.3.0";
+    m.attr("__version__") = "0.3.1";
 
     py::enum_<TrainerKind>(m, "TrainerKind")
         .value("byte_bpe", TrainerKind::byte_bpe)
