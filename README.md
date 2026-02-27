@@ -153,6 +153,27 @@ xmake run TokenFluxTrain \
   --unigram-prune-ratio 0.8 ...
 ```
 
+## Benchmark: TokenFlux++ vs OpenAI tiktoken
+
+Use the benchmark script to compare batch encoding latency and throughput:
+
+```bash
+python benchmarks/tokenfluxpp_vs_tiktoken.py \
+  --tokenflux-tokenizer artifacts/benchmark_tokenizer.json \
+  --docs 20000 \
+  --warmup 1 \
+  --repeat 5 \
+  --save-json artifacts/benchmark_report.json
+```
+
+Notes:
+
+- Install comparison dependency: `python -m pip install tiktoken`
+- If `artifacts/benchmark_tokenizer.json` does not exist, the script auto-trains a temporary TokenFlux++ byte-level BPE tokenizer from benchmark text (`--bootstrap-tokenizer` is enabled by default).
+- You can benchmark your own corpus with `--input-txt` (one doc per line) or `--input-jsonl --text-field text`.
+- `--tiktoken-encoding` defaults to `cl100k_base`; change it to match your target OpenAI tokenizer setup.
+- Output includes mean latency, standard deviation, docs/s, chars/s, and tokens/s for both engines, plus a JSON report for charts.
+
 ## Pre-Tokenization (Sharding)
 
 `TokenFluxTokenize` loads `tokenizer.json` and automatically supports model types:
