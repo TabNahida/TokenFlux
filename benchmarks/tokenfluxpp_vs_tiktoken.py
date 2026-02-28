@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import importlib
 import importlib.metadata
 import importlib.util
 import json
+import os
 import random
+import shutil
 import statistics
 import sys
-import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -17,15 +20,13 @@ from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TOKENIZER_PATH = ROOT / "artifacts" / "benchmark_tokenizer.json"
-SYNTHETIC_SNIPPETS = [
+SNIPPETS = [
     "TokenFlux++ focuses on low-latency tokenizer inference for production data pipelines.",
     "The runtime is implemented in C++ and exposed to Python through pybind bindings.",
     "Stable throughput under mixed document sizes is critical for pretraining workloads.",
     "Work stealing and bounded queues keep worker utilization high on multi-core CPUs.",
     "Pre-tokenization quality depends on tokenizer.json compatibility and text normalization.",
     "Batch encoding should remain deterministic across benchmark rounds for fair comparison.",
-    "Throughput in tokens per second and latency per batch are both useful metrics.",
-    "Benchmark methodology should include warmup iterations to reduce startup noise.",
 ]
 
 
@@ -69,16 +70,12 @@ class BenchmarkResult:
 
 
 def _add_build_path_for_tokenflux_cpp() -> None:
-    for candidate in (ROOT / "build").rglob("tokenflux_cpp.pyd"):
-        build_dir = str(candidate.parent)
-        if build_dir not in sys.path:
-            sys.path.insert(0, build_dir)
-        return
-    for candidate in (ROOT / "build").rglob("tokenflux_cpp.so"):
-        build_dir = str(candidate.parent)
-        if build_dir not in sys.path:
-            sys.path.insert(0, build_dir)
-        return
+    for suffix in ("pyd", "so"):
+        for candidate in (ROOT / "build").rglob(f"tokenflux_cpp.{suffix}"):
+            build_dir = str(candidate.parent)
+            if build_dir not in sys.path:
+                sys.path.insert(0, build_dir)
+            return
 
 
 def _load_tokenflux():
@@ -87,7 +84,7 @@ def _load_tokenflux():
     _add_build_path_for_tokenflux_cpp()
     try:
         return importlib.import_module("tokenflux")
-    except Exception as exc:  # pragma: no cover - runtime environment dependent
+    except Exception as exc:  # pragma: no cover - runtime env dependent
         raise RuntimeError(
             "Failed to import tokenflux. Build/install tokenflux_cpp first "
             "(example: `python -m pip install -e . --no-build-isolation`)."
@@ -96,56 +93,87 @@ def _load_tokenflux():
 
 def _load_tiktoken():
     if importlib.util.find_spec("tiktoken") is None:
-        raise RuntimeError(
-            "Missing dependency: tiktoken. Install it with `python -m pip install tiktoken`."
-        )
+        raise RuntimeError("Missing dependency: tiktoken. Install with `python -m pip install tiktoken`.")
     return importlib.import_module("tiktoken")
 
 
-def _load_docs_from_txt(path: Path) -> list[str]:
-    docs: list[str] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            text = line.strip()
-            if text:
-                docs.append(text)
-    return docs
-
-
-def _load_docs_from_jsonl(path: Path, text_field: str) -> list[str]:
-    docs: list[str] = []
-    with path.open("r", encoding="utf-8") as f:
-        for idx, line in enumerate(f, start=1):
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                obj = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON on line {idx} in {path}") from exc
-            text = obj.get(text_field, "")
-            if isinstance(text, str) and text:
-                docs.append(text)
-    return docs
-
-
-def _generate_synthetic_docs(num_docs: int, min_phrases: int, max_phrases: int, seed: int) -> list[str]:
+def _generate_docs(num_docs: int, min_phrases: int, max_phrases: int, seed: int) -> list[str]:
+    if min_phrases <= 0 or max_phrases < min_phrases:
+        raise ValueError("Require: 0 < min_phrases <= max_phrases")
     rng = random.Random(seed)
     docs: list[str] = []
     for idx in range(num_docs):
         phrase_count = rng.randint(min_phrases, max_phrases)
-        phrases = [SYNTHETIC_SNIPPETS[rng.randrange(len(SYNTHETIC_SNIPPETS))] for _ in range(phrase_count)]
+        phrases = [SNIPPETS[rng.randrange(len(SNIPPETS))] for _ in range(phrase_count)]
         phrases.append(f"doc_id={idx}")
         docs.append(" ".join(phrases))
     return docs
 
 
-def _bootstrap_tokenizer(tf, tokenizer_path: Path, docs: list[str], vocab_size: int, threads: int) -> None:
+def _parse_thread_points(spec: str) -> list[int]:
+    values: list[int] = []
+    for part in spec.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        if "-" in text:
+            lo_s, hi_s = text.split("-", 1)
+            lo = int(lo_s)
+            hi = int(hi_s)
+            if lo <= 0 or hi <= 0:
+                raise ValueError(f"Invalid thread range: {text}")
+            step = 1 if hi >= lo else -1
+            values.extend(range(lo, hi + step, step))
+            continue
+        value = int(text)
+        if value <= 0:
+            raise ValueError(f"Invalid thread value: {text}")
+        values.append(value)
+    deduped: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    if not deduped:
+        raise ValueError("No valid thread points.")
+    return deduped
+
+
+def _resolve_threads(value: str, arg_name: str, allow_auto: bool) -> tuple[str, int]:
+    text = value.strip().lower()
+    if allow_auto and text == "auto":
+        return "auto", max(1, os.cpu_count() or 1)
+    parsed = int(text)
+    if parsed <= 0:
+        raise ValueError(f"{arg_name} must be > 0")
+    return str(parsed), parsed
+
+
+def _resolve_trainer_kind(tf, trainer: str):
+    key = trainer.strip().lower()
+    if key not in {"byte_bpe", "bpe", "wordpiece", "unigram"}:
+        raise ValueError("trainer must be one of: byte_bpe, bpe, wordpiece, unigram")
+    return getattr(tf.TrainerKind, key)
+
+
+def _bootstrap_tokenizer(
+    tf,
+    tokenizer_path: Path,
+    docs: list[str],
+    trainer: str,
+    vocab_size: int,
+    min_freq: int,
+    min_pair_freq: int,
+    threads: int,
+) -> None:
     tokenizer_path.parent.mkdir(parents=True, exist_ok=True)
     artifacts_dir = ROOT / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="tokenfluxpp_bench_", dir=artifacts_dir) as tmp:
-        tmpdir = Path(tmp)
+    tmpdir = artifacts_dir / f"tokenfluxpp_bench_{uuid.uuid4().hex}"
+    tmpdir.mkdir(parents=True, exist_ok=False)
+    try:
         sample = tmpdir / "bootstrap.jsonl"
         with sample.open("w", encoding="utf-8") as f:
             for text in docs:
@@ -153,10 +181,10 @@ def _bootstrap_tokenizer(tf, tokenizer_path: Path, docs: list[str], vocab_size: 
                 f.write("\n")
 
         cfg = tf.TrainConfig()
-        cfg.trainer = tf.TrainerKind.byte_bpe
+        cfg.trainer = _resolve_trainer_kind(tf, trainer)
         cfg.vocab_size = vocab_size
-        cfg.min_freq = 2
-        cfg.min_pair_freq = 2
+        cfg.min_freq = min_freq
+        cfg.min_pair_freq = min_pair_freq
         cfg.threads = max(1, threads)
         cfg.resume = False
         cfg.chunk_dir = str(tmpdir / "chunks")
@@ -164,12 +192,54 @@ def _bootstrap_tokenizer(tf, tokenizer_path: Path, docs: list[str], vocab_size: 
         cfg.output_vocab = str(tmpdir / "vocab.json")
         cfg.output_merges = str(tmpdir / "merges.txt")
         tf.train(cfg, [str(sample)])
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _encode_tiktoken_batch(encoding, docs: list[str], num_threads: int) -> list[list[int]]:
+def _split_docs(docs: list[str], workers: int) -> list[list[str]]:
+    workers = max(1, min(workers, len(docs)))
+    base = len(docs) // workers
+    rem = len(docs) % workers
+    out: list[list[str]] = []
+    start = 0
+    for idx in range(workers):
+        end = start + base + (1 if idx < rem else 0)
+        chunk = docs[start:end]
+        if chunk:
+            out.append(chunk)
+        start = end
+    return out
+
+
+def _make_tokenflux_runner(tf, tokenizer_path: Path, docs: list[str], workers: int) -> Callable[[], int]:
+    workers = max(1, workers)
+    if workers == 1 or len(docs) <= 1:
+        tok = tf.Tokenizer(str(tokenizer_path))
+
+        def run() -> int:
+            batch = tok.encode_batch(docs, "", "", True)
+            return sum(len(ids) for ids in batch)
+
+        return run
+
+    chunks = _split_docs(docs, workers)
+    tokenizers = [tf.Tokenizer(str(tokenizer_path)) for _ in chunks]
+
+    def run() -> int:
+        total = 0
+        with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+            futures = [pool.submit(tok.encode_batch, chunk, "", "", True) for tok, chunk in zip(tokenizers, chunks)]
+            for future in futures:
+                total += sum(len(ids) for ids in future.result())
+        return total
+
+    return run
+
+
+def _encode_tiktoken_batch(encoding, docs: list[str], threads: int) -> list[list[int]]:
     kwargs = {}
-    if num_threads > 0:
-        kwargs["num_threads"] = num_threads
+    if threads > 0:
+        kwargs["num_threads"] = threads
     if hasattr(encoding, "encode_ordinary_batch"):
         try:
             return encoding.encode_ordinary_batch(docs, **kwargs)
@@ -179,6 +249,14 @@ def _encode_tiktoken_batch(encoding, docs: list[str], num_threads: int) -> list[
         return encoding.encode_batch(docs, disallowed_special=(), **kwargs)
     except TypeError:
         return encoding.encode_batch(docs, disallowed_special=())
+
+
+def _make_tiktoken_runner(encoding, docs: list[str], threads: int) -> Callable[[], int]:
+    def run() -> int:
+        batch = _encode_tiktoken_batch(encoding, docs, threads)
+        return sum(len(ids) for ids in batch)
+
+    return run
 
 
 def _run_benchmark(
@@ -191,170 +269,217 @@ def _run_benchmark(
 ) -> BenchmarkResult:
     for _ in range(max(warmup, 0)):
         runner()
-
     latencies: list[float] = []
     token_counts: list[int] = []
     for _ in range(max(repeat, 1)):
-        start = perf_counter()
+        st = perf_counter()
         token_count = runner()
-        elapsed = perf_counter() - start
-        latencies.append(elapsed)
+        latencies.append(perf_counter() - st)
         token_counts.append(token_count)
     return BenchmarkResult(name=name, latencies=latencies, token_counts=token_counts, docs=docs, chars=chars)
 
 
-def _fmt_float(value: float) -> str:
+def _print_table(headers: list[str], rows: list[list[str]]) -> None:
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    def fmt(cells: list[str]) -> str:
+        return " | ".join(cells[i].ljust(widths[i]) for i in range(len(cells)))
+
+    print(fmt(headers))
+    print("-+-".join("-" * w for w in widths))
+    for row in rows:
+        print(fmt(row))
+
+
+def _fmtf(value: float) -> str:
     return f"{value:,.4f}"
 
 
-def _fmt_int(value: float) -> str:
+def _fmti(value: float) -> str:
     return f"{value:,.0f}"
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Benchmark TokenFlux++ against OpenAI tiktoken for batch encoding throughput."
-    )
-    input_group = parser.add_mutually_exclusive_group()
-    input_group.add_argument("--input-txt", type=Path, help="Plain text file. One document per line.")
-    input_group.add_argument(
-        "--input-jsonl",
-        type=Path,
-        help="JSONL input file. Use --text-field to choose the text key (default: text).",
-    )
-    parser.add_argument("--text-field", default="text", help="Text field name for --input-jsonl.")
-    parser.add_argument("--docs", type=int, default=20000, help="Synthetic docs count or max docs from input file.")
-    parser.add_argument("--min-phrases", type=int, default=3, help="Min snippets per synthetic document.")
-    parser.add_argument("--max-phrases", type=int, default=12, help="Max snippets per synthetic document.")
-    parser.add_argument("--seed", type=int, default=20260227, help="Synthetic workload random seed.")
-    parser.add_argument("--warmup", type=int, default=1, help="Warmup rounds (not measured).")
-    parser.add_argument("--repeat", type=int, default=5, help="Measured rounds.")
-    parser.add_argument(
-        "--tokenflux-tokenizer",
-        type=Path,
-        default=DEFAULT_TOKENIZER_PATH,
-        help=f"Tokenizer JSON path for TokenFlux++ (default: {DEFAULT_TOKENIZER_PATH}).",
-    )
-    parser.add_argument(
-        "--bootstrap-tokenizer",
-        dest="bootstrap_tokenizer",
-        action="store_true",
-        help="Train a byte-level BPE tokenizer when --tokenflux-tokenizer does not exist.",
-    )
-    parser.add_argument(
-        "--no-bootstrap-tokenizer",
-        dest="bootstrap_tokenizer",
-        action="store_false",
-        help="Do not auto-train tokenizer when --tokenflux-tokenizer is missing.",
-    )
-    parser.set_defaults(bootstrap_tokenizer=True)
-    parser.add_argument("--bootstrap-docs", type=int, default=5000, help="Docs used for tokenizer bootstrap training.")
-    parser.add_argument("--bootstrap-vocab-size", type=int, default=16000, help="Vocab size for bootstrap training.")
-    parser.add_argument("--bootstrap-threads", type=int, default=4, help="Threads for bootstrap training.")
-    parser.add_argument("--tiktoken-encoding", default="cl100k_base", help="OpenAI tiktoken encoding name.")
-    parser.add_argument(
-        "--tiktoken-num-threads",
-        type=int,
-        default=0,
-        help="tiktoken batch encode threads (<=0 means use tiktoken default).",
-    )
-    parser.add_argument("--save-json", type=Path, help="Optional path to write benchmark results as JSON.")
-    return parser.parse_args()
+    p = argparse.ArgumentParser(description="Benchmark TokenFlux++ vs OpenAI tiktoken.")
+    p.add_argument("--docs", type=int, default=200000)
+    p.add_argument("--min-phrases", type=int, default=3)
+    p.add_argument("--max-phrases", type=int, default=12)
+    p.add_argument("--seed", type=int, default=20260227)
+    p.add_argument("--warmup", type=int, default=2)
+    p.add_argument("--repeat", type=int, default=8)
+    p.add_argument("--thread-points", default="1,2,4,8,16,32")
+    p.add_argument("--sweep-warmup", type=int, default=1)
+    p.add_argument("--sweep-repeat", type=int, default=2)
+    p.add_argument("--tokenflux-tokenizer", type=Path, default=DEFAULT_TOKENIZER_PATH)
+    p.add_argument("--tokenflux-threads", default="auto", help="int or auto")
+    p.add_argument("--trainer", default="byte_bpe")
+    p.add_argument("--vocab-size", type=int, default=16000)
+    p.add_argument("--min-freq", type=int, default=2)
+    p.add_argument("--min-pair-freq", type=int, default=2)
+    p.add_argument("--bootstrap-docs", type=int, default=5000)
+    p.add_argument("--bootstrap-threads", type=int, default=4)
+    p.add_argument("--bootstrap-tokenizer", dest="bootstrap_tokenizer", action="store_true")
+    p.add_argument("--no-bootstrap-tokenizer", dest="bootstrap_tokenizer", action="store_false")
+    p.set_defaults(bootstrap_tokenizer=True)
+    p.add_argument("--tiktoken-encoding", default="cl100k_base")
+    p.add_argument("--tiktoken-num-threads", type=int, default=0, help="<=0 means auto")
+    p.add_argument("--save-json", type=Path)
+    return p.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
-
-    if args.max_phrases < args.min_phrases:
-        raise ValueError("--max-phrases must be >= --min-phrases")
-
-    if args.input_txt:
-        docs = _load_docs_from_txt(args.input_txt)
-    elif args.input_jsonl:
-        docs = _load_docs_from_jsonl(args.input_jsonl, args.text_field)
-    else:
-        docs = _generate_synthetic_docs(args.docs, args.min_phrases, args.max_phrases, args.seed)
-
-    if args.docs > 0:
-        docs = docs[: args.docs]
-    if not docs:
-        raise RuntimeError("No documents available for benchmarking.")
-
     tf = _load_tokenflux()
     tiktoken = _load_tiktoken()
+
+    docs = _generate_docs(args.docs, args.min_phrases, args.max_phrases, args.seed)
+    if not docs:
+        raise RuntimeError("No docs generated.")
+    chars = sum(len(doc) for doc in docs)
 
     tokenizer_path = args.tokenflux_tokenizer.resolve()
     if not tokenizer_path.exists():
         if not args.bootstrap_tokenizer:
-            raise RuntimeError(
-                f"Tokenizer not found: {tokenizer_path}. "
-                "Provide --tokenflux-tokenizer or enable --bootstrap-tokenizer."
-            )
+            raise RuntimeError(f"Tokenizer not found: {tokenizer_path}")
         bootstrap_docs = docs[: max(1, min(len(docs), args.bootstrap_docs))]
-        print(f"[setup] Training bootstrap TokenFlux++ tokenizer -> {tokenizer_path}")
+        print(f"[setup] Training TokenFlux++ tokenizer -> {tokenizer_path}")
         _bootstrap_tokenizer(
             tf,
             tokenizer_path=tokenizer_path,
             docs=bootstrap_docs,
-            vocab_size=args.bootstrap_vocab_size,
+            trainer=args.trainer,
+            vocab_size=args.vocab_size,
+            min_freq=args.min_freq,
+            min_pair_freq=args.min_pair_freq,
             threads=args.bootstrap_threads,
         )
 
-    tokenflux_tokenizer = tf.Tokenizer(str(tokenizer_path))
-    tiktoken_encoding = tiktoken.get_encoding(args.tiktoken_encoding)
+    tf_mode, tf_threads = _resolve_threads(args.tokenflux_threads, "--tokenflux-threads", allow_auto=True)
+    tk_threads = args.tiktoken_num_threads
+    thread_points = _parse_thread_points(args.thread_points)
 
-    total_chars = sum(len(doc) for doc in docs)
+    enc = tiktoken.get_encoding(args.tiktoken_encoding)
+    tf_runner = _make_tokenflux_runner(tf, tokenizer_path, docs, tf_threads)
+    tk_runner = _make_tiktoken_runner(enc, docs, tk_threads)
 
-    def run_tokenflux() -> int:
-        batch = tokenflux_tokenizer.encode_batch(docs, reset_cache=True)
-        return sum(len(ids) for ids in batch)
-
-    def run_tiktoken() -> int:
-        batch = _encode_tiktoken_batch(tiktoken_encoding, docs, args.tiktoken_num_threads)
-        return sum(len(ids) for ids in batch)
-
-    tokenflux_result = _run_benchmark(
-        name="TokenFlux++",
-        runner=run_tokenflux,
+    tf_result = _run_benchmark(
+        name=f"TokenFlux++ (threads={tf_threads})",
+        runner=tf_runner,
         warmup=args.warmup,
         repeat=args.repeat,
         docs=len(docs),
-        chars=total_chars,
+        chars=chars,
     )
-    tiktoken_result = _run_benchmark(
-        name="OpenAI tiktoken",
-        runner=run_tiktoken,
+    tk_label = "OpenAI tiktoken (threads=auto)" if tk_threads <= 0 else f"OpenAI tiktoken (threads={tk_threads})"
+    tk_result = _run_benchmark(
+        name=tk_label,
+        runner=tk_runner,
         warmup=args.warmup,
         repeat=args.repeat,
         docs=len(docs),
-        chars=total_chars,
+        chars=chars,
     )
 
-    print(
-        f"Workload: docs={len(docs):,}, chars={total_chars:,}, "
-        f"avg_chars/doc={total_chars / len(docs):.1f}"
+    print(f"Workload: docs={len(docs):,}, chars={chars:,}, avg_chars/doc={chars / len(docs):.1f}")
+    if tf_mode == "auto":
+        print(f"TokenFlux++ baseline threads: auto -> {tf_threads}")
+    else:
+        print(f"TokenFlux++ baseline threads: {tf_threads}")
+    print("OpenAI tiktoken baseline threads: auto" if tk_threads <= 0 else f"OpenAI tiktoken baseline threads: {tk_threads}")
+
+    _print_table(
+        ["Engine", "Mean latency (s)", "Std (s)", "Docs/s", "Chars/s", "Tokens/s", "Avg tokens/doc"],
+        [
+            [
+                tf_result.name,
+                _fmtf(tf_result.mean_latency),
+                _fmtf(tf_result.std_latency),
+                _fmti(tf_result.docs_per_sec),
+                _fmti(tf_result.chars_per_sec),
+                _fmti(tf_result.tokens_per_sec),
+                _fmtf(tf_result.avg_tokens_per_doc),
+            ],
+            [
+                tk_result.name,
+                _fmtf(tk_result.mean_latency),
+                _fmtf(tk_result.std_latency),
+                _fmti(tk_result.docs_per_sec),
+                _fmti(tk_result.chars_per_sec),
+                _fmti(tk_result.tokens_per_sec),
+                _fmtf(tk_result.avg_tokens_per_doc),
+            ],
+        ],
     )
-    print(f"TokenFlux++ tokenizer: {tokenizer_path}")
-    print(f"OpenAI tiktoken encoding: {args.tiktoken_encoding}")
 
-    print("| Engine | Mean latency (s) | Std (s) | Docs/s | Chars/s | Tokens/s | Avg tokens/doc |")
-    print("|---|---:|---:|---:|---:|---:|---:|")
-    for result in (tokenflux_result, tiktoken_result):
-        print(
-            f"| {result.name} | {_fmt_float(result.mean_latency)} | {_fmt_float(result.std_latency)} | "
-            f"{_fmt_int(result.docs_per_sec)} | {_fmt_int(result.chars_per_sec)} | "
-            f"{_fmt_int(result.tokens_per_sec)} | {_fmt_float(result.avg_tokens_per_doc)} |"
-        )
-
-    tf_v = getattr(tf, "__version__", "unknown")
-    tk_v = importlib.metadata.version("tiktoken")
-    print(f"Versions: tokenflux={tf_v}, tiktoken={tk_v}, python={sys.version.split()[0]}")
-
-    speed_ratio = tiktoken_result.mean_latency / tokenflux_result.mean_latency
+    speed_ratio = tk_result.mean_latency / tf_result.mean_latency
     if speed_ratio >= 1.0:
         print(f"Latency speedup: TokenFlux++ is {speed_ratio:.2f}x faster than OpenAI tiktoken.")
     else:
         print(f"Latency speedup: OpenAI tiktoken is {(1.0 / speed_ratio):.2f}x faster than TokenFlux++.")
+
+    print("")
+    print(f"Thread points: {thread_points} (warmup={args.sweep_warmup}, repeat={args.sweep_repeat})")
+    tk_by_thread: dict[int, BenchmarkResult] = {}
+    for th in thread_points:
+        tk_by_thread[th] = _run_benchmark(
+            name=f"OpenAI tiktoken (threads={th})",
+            runner=_make_tiktoken_runner(enc, docs, th),
+            warmup=args.sweep_warmup,
+            repeat=args.sweep_repeat,
+            docs=len(docs),
+            chars=chars,
+        )
+
+    thread_rows: list[list[str]] = []
+    thread_results: list[dict[str, object]] = []
+    for th in thread_points:
+        tf_point = _run_benchmark(
+            name=f"TokenFlux++ (threads={th})",
+            runner=_make_tokenflux_runner(tf, tokenizer_path, docs, th),
+            warmup=args.sweep_warmup,
+            repeat=args.sweep_repeat,
+            docs=len(docs),
+            chars=chars,
+        )
+        tk_point = tk_by_thread[th]
+        faster = "TokenFlux++" if tf_point.mean_latency <= tk_point.mean_latency else "OpenAI tiktoken"
+        thread_rows.append(
+            [
+                str(th),
+                _fmtf(tf_point.mean_latency),
+                _fmtf(tk_point.mean_latency),
+                _fmti(tf_point.docs_per_sec),
+                _fmti(tk_point.docs_per_sec),
+                faster,
+            ]
+        )
+        thread_results.append(
+            {
+                "threads": th,
+                "tokenflux": {
+                    "mean_latency_s": tf_point.mean_latency,
+                    "std_latency_s": tf_point.std_latency,
+                    "docs_per_sec": tf_point.docs_per_sec,
+                    "chars_per_sec": tf_point.chars_per_sec,
+                    "tokens_per_sec": tf_point.tokens_per_sec,
+                },
+                "tiktoken": {
+                    "mean_latency_s": tk_point.mean_latency,
+                    "std_latency_s": tk_point.std_latency,
+                    "docs_per_sec": tk_point.docs_per_sec,
+                    "chars_per_sec": tk_point.chars_per_sec,
+                    "tokens_per_sec": tk_point.tokens_per_sec,
+                },
+            }
+        )
+
+    _print_table(
+        ["Threads", "TokenFlux++ latency (s)", "tiktoken latency (s)", "TokenFlux++ docs/s", "tiktoken docs/s", "Faster"],
+        thread_rows,
+    )
 
     if args.save_json:
         args.save_json.parent.mkdir(parents=True, exist_ok=True)
@@ -363,40 +488,49 @@ def main() -> None:
                 {
                     "workload": {
                         "docs": len(docs),
-                        "chars": total_chars,
-                        "avg_chars_per_doc": total_chars / len(docs),
-                        "tokenflux_tokenizer": str(tokenizer_path),
-                        "tiktoken_encoding": args.tiktoken_encoding,
+                        "chars": chars,
+                        "avg_chars_per_doc": chars / len(docs),
+                        "tokenizer_path": str(tokenizer_path),
+                        "trainer": args.trainer,
+                        "vocab_size": args.vocab_size,
+                        "min_freq": args.min_freq,
+                        "min_pair_freq": args.min_pair_freq,
                         "warmup": args.warmup,
                         "repeat": args.repeat,
+                        "thread_points": thread_points,
+                        "sweep_warmup": args.sweep_warmup,
+                        "sweep_repeat": args.sweep_repeat,
+                        "tokenflux_threads_mode": tf_mode,
+                        "tokenflux_threads": tf_threads,
+                        "tiktoken_num_threads": tk_threads,
+                        "tiktoken_encoding": args.tiktoken_encoding,
                     },
                     "results": [
                         {
-                            "engine": tokenflux_result.name,
-                            "mean_latency_s": tokenflux_result.mean_latency,
-                            "std_latency_s": tokenflux_result.std_latency,
-                            "docs_per_sec": tokenflux_result.docs_per_sec,
-                            "chars_per_sec": tokenflux_result.chars_per_sec,
-                            "tokens_per_sec": tokenflux_result.tokens_per_sec,
-                            "avg_tokens_per_doc": tokenflux_result.avg_tokens_per_doc,
-                            "mean_token_count": tokenflux_result.mean_tokens,
-                            "latencies_s": tokenflux_result.latencies,
+                            "engine": tf_result.name,
+                            "mean_latency_s": tf_result.mean_latency,
+                            "std_latency_s": tf_result.std_latency,
+                            "docs_per_sec": tf_result.docs_per_sec,
+                            "chars_per_sec": tf_result.chars_per_sec,
+                            "tokens_per_sec": tf_result.tokens_per_sec,
+                            "avg_tokens_per_doc": tf_result.avg_tokens_per_doc,
+                            "latencies_s": tf_result.latencies,
                         },
                         {
-                            "engine": tiktoken_result.name,
-                            "mean_latency_s": tiktoken_result.mean_latency,
-                            "std_latency_s": tiktoken_result.std_latency,
-                            "docs_per_sec": tiktoken_result.docs_per_sec,
-                            "chars_per_sec": tiktoken_result.chars_per_sec,
-                            "tokens_per_sec": tiktoken_result.tokens_per_sec,
-                            "avg_tokens_per_doc": tiktoken_result.avg_tokens_per_doc,
-                            "mean_token_count": tiktoken_result.mean_tokens,
-                            "latencies_s": tiktoken_result.latencies,
+                            "engine": tk_result.name,
+                            "mean_latency_s": tk_result.mean_latency,
+                            "std_latency_s": tk_result.std_latency,
+                            "docs_per_sec": tk_result.docs_per_sec,
+                            "chars_per_sec": tk_result.chars_per_sec,
+                            "tokens_per_sec": tk_result.tokens_per_sec,
+                            "avg_tokens_per_doc": tk_result.avg_tokens_per_doc,
+                            "latencies_s": tk_result.latencies,
                         },
                     ],
+                    "thread_point_results": thread_results,
                     "versions": {
-                        "tokenflux": tf_v,
-                        "tiktoken": tk_v,
+                        "tokenflux": getattr(tf, "__version__", "unknown"),
+                        "tiktoken": importlib.metadata.version("tiktoken"),
                         "python": sys.version.split()[0],
                     },
                 },

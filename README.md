@@ -155,24 +155,30 @@ xmake run TokenFluxTrain \
 
 ## Benchmark: TokenFlux++ vs OpenAI tiktoken
 
-Use the benchmark script to compare batch encoding latency and throughput:
+Use the benchmark script to compare TokenFlux++ and OpenAI tiktoken with built-in synthetic workload.
 
 ```bash
 python benchmarks/tokenfluxpp_vs_tiktoken.py \
   --tokenflux-tokenizer artifacts/benchmark_tokenizer.json \
-  --docs 20000 \
-  --warmup 1 \
-  --repeat 5 \
+  --docs 200000 \
+  --warmup 2 \
+  --repeat 8 \
+  --thread-points 1,2,4,8,16 \
+  --sweep-warmup 1 \
+  --sweep-repeat 2 \
   --save-json artifacts/benchmark_report.json
 ```
 
 Notes:
 
 - Install comparison dependency: `python -m pip install tiktoken`
-- If `artifacts/benchmark_tokenizer.json` does not exist, the script auto-trains a temporary TokenFlux++ byte-level BPE tokenizer from benchmark text (`--bootstrap-tokenizer` is enabled by default).
-- You can benchmark your own corpus with `--input-txt` (one doc per line) or `--input-jsonl --text-field text`.
+- The script does not require any input file arguments; it generates test docs internally.
+- If `artifacts/benchmark_tokenizer.json` does not exist, the script auto-trains a temporary TokenFlux++ tokenizer (`--bootstrap-tokenizer` is enabled by default).
 - `--tiktoken-encoding` defaults to `cl100k_base`; change it to match your target OpenAI tokenizer setup.
-- Output includes mean latency, standard deviation, docs/s, chars/s, and tokens/s for both engines, plus a JSON report for charts.
+- `--tokenflux-threads` supports `auto` (default), so you can run fair `auto vs auto` baseline.
+- `--thread-points` controls paired comparison points (TokenFlux++ threads vs tiktoken threads at the same value).
+- Rebuild `tokenflux_cpp` after pulling benchmark/threading updates (`xmake f -y -m release --pybind=y && xmake build -y tokenflux_cpp`) so Python `encode`/`encode_batch` thread scaling is effective.
+- Output includes baseline metrics and per-thread comparison tables, plus a JSON report for plotting.
 
 ## Pre-Tokenization (Sharding)
 

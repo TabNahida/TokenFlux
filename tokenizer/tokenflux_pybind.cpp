@@ -387,9 +387,11 @@ PYBIND11_MODULE(tokenflux_cpp, m)
         .def_property_readonly("model_name", &PythonTokenizer::model_name)
         .def("token_to_id", &PythonTokenizer::token_to_id, py::arg("token"))
         .def("encode", &PythonTokenizer::encode, py::arg("text"), py::arg("bos_token") = "",
-             py::arg("eos_token") = "", py::arg("reset_cache") = false)
+             py::arg("eos_token") = "", py::arg("reset_cache") = false,
+             py::call_guard<py::gil_scoped_release>())
         .def("encode_batch", &PythonTokenizer::encode_batch, py::arg("texts"), py::arg("bos_token") = "",
-             py::arg("eos_token") = "", py::arg("reset_cache") = false)
+             py::arg("eos_token") = "", py::arg("reset_cache") = false,
+             py::call_guard<py::gil_scoped_release>())
         .def("encode_to_torch", &PythonTokenizer::encode_to_torch, py::arg("text"), py::arg("bos_token") = "",
              py::arg("eos_token") = "", py::arg("dtype") = "int64", py::arg("reset_cache") = false)
         .def("encode_batch_to_torch", &PythonTokenizer::encode_batch_to_torch, py::arg("texts"),
