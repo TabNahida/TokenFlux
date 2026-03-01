@@ -44,53 +44,28 @@ print(ids[:10], len(ids))
 
 ## Performance
 
-Benchmark command:
-
 ```bash
-python benchmarks/tokenfluxpp_vs_tiktoken.py
+python benchmarks/tokenfluxpp_vs_tiktoken_vs_tokenizer.py
 ```
 
-The benchmark uses built-in synthetic workload (`docs=200000`) and compares:
-
-- Train latency (TokenFlux++ only)
-- Baseline: `TokenFlux++ auto` vs `OpenAI tiktoken auto`
-- Decode latency (TokenFlux++ vs OpenAI tiktoken)
-- Round-trip correctness: `encode -> decode -> re-encode`
-- Thread points: `1,2,4,8,16`
-
-Install compare dependency:
+Install compare dependencies:
 
 ```bash
 python -m pip install tiktoken
 python -m pip install tokenizers
 ```
 
-### Latest benchmark result
+Snapshot — encode throughput (docs/s) by thread count (higher is better):
 
-Workload:
+![Encode Throughput by threads](benchmarks/thread_throughput.png)
 
-- docs: `200,000`
-- chars: `130,129,434`
-- avg chars/doc: `650.6`
 
-Baseline (`auto` vs `auto`):
+Latest encode latency speedup:
+- **4.32x** vs OpenAI tiktoken
+- **11.89x** vs HuggingFace tokenizers
 
-| Engine | Mean latency (s) | Std (s) | Docs/s | Chars/s | Tokens/s | Avg tokens/doc |
-|---|---:|---:|---:|---:|---:|---:|
-| TokenFlux++ (threads=32) | 0.7761 | 0.0910 | 257,696 | 167,669,194 | 24,492,928 | 95.0458 |
-| OpenAI tiktoken (threads=auto) | 3.5128 | 0.1266 | 56,935 | 37,044,604 | 6,349,635 | 111.5243 |
-
-Latency speedup: **TokenFlux++ is 4.53x faster than OpenAI tiktoken**.
-
-Thread points:
-
-| Threads | TokenFlux++ latency (s) | tiktoken latency (s) | TokenFlux++ docs/s | tiktoken docs/s | Faster |
-|---:|---:|---:|---:|---:|---|
-| 1 | 2.9136 | 7.4206 | 68,643 | 26,952 | TokenFlux++ |
-| 2 | 2.0457 | 4.8981 | 97,765 | 40,832 | TokenFlux++ |
-| 4 | 1.3322 | 3.3811 | 150,124 | 59,152 | TokenFlux++ |
-| 8 | 0.7972 | 3.5846 | 250,872 | 55,794 | TokenFlux++ |
-| 16 | 0.7364 | 3.4150 | 271,596 | 58,566 | TokenFlux++ |
+Full benchmark report:  
+[benchmarks/BENCHMARK_RESULTS_2026-03-01.md](benchmarks/BENCHMARK_RESULTS_2026-03-01.md)
 
 ## CLI
 
