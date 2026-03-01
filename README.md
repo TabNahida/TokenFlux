@@ -52,13 +52,17 @@ python benchmarks/tokenfluxpp_vs_tiktoken.py
 
 The benchmark uses built-in synthetic workload (`docs=200000`) and compares:
 
+- Train latency (TokenFlux++ only)
 - Baseline: `TokenFlux++ auto` vs `OpenAI tiktoken auto`
+- Decode latency (TokenFlux++ vs OpenAI tiktoken)
+- Round-trip correctness: `encode -> decode -> re-encode`
 - Thread points: `1,2,4,8,16`
 
 Install compare dependency:
 
 ```bash
 python -m pip install tiktoken
+python -m pip install tokenizers
 ```
 
 ### Latest benchmark result
